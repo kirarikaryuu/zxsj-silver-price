@@ -110,6 +110,38 @@ docker run -d \
 >
 > **`-v data`**：数据持久化，容器重建不丢历史。
 
+#### 方式 B：用 docker-compose（推荐长期管理）
+
+项目根目录已带 `docker-compose.yml`，但默认是 bridge 网络，需要改成 host 模式。在项目根目录建 `.env` 文件：
+
+```bash
+echo "GIT_TOKEN=ghp_你的token" > .env
+```
+
+然后把 `docker-compose.yml` 改为：
+
+```yaml
+version: '3'
+services:
+  silver-crawler:
+    build: .
+    container_name: zxsj-silver
+    restart: always
+    network_mode: host          # 关键：替代 ports 映射
+    volumes:
+      - ./data:/app/data
+    environment:
+      - AUTO_PUSH=1
+      - GIT_TOKEN=${GIT_TOKEN}
+```
+
+启动：
+
+```bash
+docker compose up -d --build      # 老版本用 docker-compose up -d --build
+docker compose logs -f             # 看日志
+```
+
 ### 4. 验证
 
 ```bash
@@ -274,6 +306,70 @@ zxsj-silver-price/
 - **sha 缓存**：上传成功的文件 sha 存内存，下次更新省掉 GET 查询
 - **超时保护**：所有网络请求带超时，不会无限卡死
 - **只推当天**：历史 data 文件不变不推，避免随天数增长触发 GitHub 限流
+
+## 🔍 故障排查（FAQ）
+
+### 采集正常但数据没推到 GitHub
+
+1. 看日志有没有 `数据已推送到 GitHub (3 文件)`：
+   - 有 → 检查 GitHub 仓库 `data/` 是否真的更新（可能有几分钟延迟）
+   - 没有，提示 `未设置 GIT_TOKEN` → 容器没传 `GIT_TOKEN` 环境变量
+   - 提示 `push 失败 status=401/403` → token 无效或权限不足
+   - 提示 `status=404` → 仓库地址/分支名不对（检查 `app.js` 顶部 `GH_OWNER`/`GH_REPO`/`GH_BRANCH`）
+2. **token 权限**：classic token 勾 `repo`；fine-grained token 要把 **Contents 设为 Read and write** 并选中该仓库。fine-grained 只读会 403。
+
+### 日志卡在「同步远程最新数据」不动 / 容器采集一轮后就停了
+
+这是早期 git push 版本的问题（容器内访问 `github.com` 卡死）。**当前版本已用 API 推送，不会再卡**。如果还遇到，确认容器跑的是最新镜像：
+
+```bash
+docker build -t zxsj-silver . --no-cache   # 强制重建
+docker rm -f zxsj-silver && docker run ...  # 重新启动
+```
+
+### 容器内访问不了 GitHub（push 全失败）
+
+极空间 Docker 默认 bridge 网络到 `github.com`/`api.github.com` 不稳定。**务必用 `--network host`**（见部署章节）。验证：
+
+```bash
+docker exec zxsj-silver wget -q -O- https://api.github.com >/dev/null && echo OK || echo FAIL
+```
+
+FAIL 就说明网络模式没改对。
+
+### 端口 8090 被占用
+
+NAS 模式默认不启动 Web 服务（纯采集器），不会有端口冲突。只有显式 `WEB_SERVER=1` 才会监听端口，被占用时 app.js 会自动 +1（8090→8091）。
+
+### 采集成功率不到 100%
+
+偶发 `code=非0` 或 `请求失败` 是 7881 接口抽风，单区失败会自动重试 1 次。如果**长期大面积失败**，可能是：
+- NAS 出口 IP 被 7881 风控（采集太频繁，可把 `CFG.INTERVAL` 调大到 10~15 分钟）
+- 签名 key 失效（7881 改了接口，需重新逆向）
+
+### Pages 网页数据不更新
+
+Pages 部署有 1~2 分钟延迟。确认链路：
+
+```bash
+# 1. 容器在推吗
+docker logs --tail 5 zxsj-silver | grep "已推送"
+# 2. GitHub 上 data.js 更新了吗（看最近 commit 时间）
+# 3. Pages 部署状态：仓库 → Actions → pages-build-deployment
+```
+
+### 数据文件越来越大、推送变慢
+
+不会。每轮只推 3 个文件（当天 data + history.json + data.js），与历史天数无关。`data/` 下历史 json 一旦过了当天就不再推送。
+
+### 更换 GitHub Token
+
+```bash
+docker rm -f zxsj-silver
+docker run -d ... -e GIT_TOKEN=新token ... zxsj-silver
+```
+
+---
 
 ## 🛡 免责声明
 
