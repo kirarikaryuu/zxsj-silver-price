@@ -82,7 +82,9 @@ function removeOutliers(prices) {
 }
 
 // ======================== 采集单个区 ========================
-async function crawlOne(serverName, serverId) {
+// roundTs: 本轮统一时间戳（由 crawl 传入），保证同一轮8个区共享一个 ts，
+// 避免串行采集跨分钟边界时被切到不同分钟桶。
+async function crawlOne(serverName, serverId, roundTs) {
   const bodyObj = { ...CFG.baseBody, serverId };
   const bodyStr = JSON.stringify(bodyObj);
   const url = new URL(CFG.apiUrl);
@@ -145,7 +147,7 @@ async function crawlOne(serverName, serverId) {
           const low = Math.min(...valid);
 
           console.log(`  [${serverName}] 均价 ${avg.toFixed(4)} | ${low.toFixed(4)}~${high.toFixed(4)} | 共${all.length} 挂单 / 范围内${inRange.length} / 异常${outliers} / 取前${valid.length}`);
-          resolve({ ts: Date.now(), avg, high, low, open: valid[0], close: valid[valid.length - 1], sampleCount: valid.length });
+          resolve({ ts: roundTs, avg, high, low, open: valid[0], close: valid[valid.length - 1], sampleCount: valid.length });
         } catch (e) {
           console.error(`  [${serverName}] 解析失败: ${e.message}`);
           resolve(null);
@@ -162,17 +164,20 @@ async function crawlOne(serverName, serverId) {
 async function crawl() {
   const t = now();
   const entries = Object.entries(SERVERS);
+  // 本轮统一时间戳：所有区都用这个 ts，保证同一轮数据落在同一个分钟桶
+  // （串行采集8区约耗时 8×800ms≈6.4秒，若各自取 Date.now() 可能跨分钟边界）
+  const roundTs = Date.now();
   console.log(`[${t.toLocaleString('zh-CN')}] 采集开始 (${entries.length}区)`);
 
   let okCount = 0, failCount = 0;
   for (let i = 0; i < entries.length; i++) {
     const [serverName, serverId] = entries[i];
-    let rec = await crawlOne(serverName, serverId);
+    let rec = await crawlOne(serverName, serverId, roundTs);
     // 首次失败则重试 1 次（7881 偶发抽风，补一次能显著降低空洞率）
     if (!rec) {
       await sleep(1000);
       console.log(`  [${serverName}] 重试中...`);
-      rec = await crawlOne(serverName, serverId);
+      rec = await crawlOne(serverName, serverId, roundTs);
     }
     if (rec) { saveRecord(serverName, serverId, rec); okCount++; }
     else { failCount++; }
