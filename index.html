@@ -274,17 +274,43 @@ function renderSummaryHistory() {
 }
 
 // 汇总单日：8区当天所有采样点折线
+// 关键：同一轮采集的8个区时间戳差几秒(串行采集间隔800ms)，
+// 直接用 time 轴会导致8条线错开、tooltip 也凑不齐。
+// 改为按"分钟"分桶对齐 → 8区共享同一X位置 → tooltip 能一次显示全部8区。
 function renderSummaryDay() {
   const names = Object.keys(HISTORY.servers);
-  const series = names.map(name => {
-    const samples = (HISTORY.servers[name].data || []).filter(s => dayStr(s.ts) === curDate);
-    return {
-      name, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 4, showSymbol: true,
-      data: samples.map(s => [s.ts, s.avg]),
-      lineStyle: { width: 1.8 }, emphasis: { focus: 'series' },
-    };
+
+  // 1. 收集当天所有采样点，按"HH:mm"分桶（同一轮8个区落在同一桶）
+  const bucket = {};  // { 'HH:mm': { 区名: 该分钟内最后一个均价 } }
+  const bucketTime = {};  // { 'HH:mm': 该桶代表的时间戳(用于排序) }
+  for (const name of names) {
+    for (const s of (HISTORY.servers[name].data || [])) {
+      if (dayStr(s.ts) !== curDate) continue;
+      const d = new Date(s.ts);
+      const p = n => String(n).padStart(2, '0');
+      const key = `${p(d.getHours())}:${p(d.getMinutes())}`;  // 精确到分钟，秒被抹平
+      if (!bucket[key]) { bucket[key] = {}; bucketTime[key] = s.ts; }
+      bucket[key][name] = s.avg;          // 同一桶同一区取最后一次（覆盖）
+      if (s.ts > bucketTime[key]) bucketTime[key] = s.ts;
+    }
+  }
+
+  // 2. 按时间排序得到 X 轴标签
+  const labels = Object.keys(bucket).sort((a, b) => bucketTime[a] - bucketTime[b]);
+
+  // 3. 每个区一条线，数据按 label 对齐（缺数据填 null）
+  const series = names.map(name => ({
+    name, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 4, showSymbol: true,
+    data: labels.map(k => bucket[k][name] ?? null),
+    connectNulls: true,
+    lineStyle: { width: 1.8 }, emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
+  }));
+
+  applyCommon({
+    series, legend: names,
+    xType: 'category', xData: labels,
+    // 不传 xLabelFormat：标签 "19:35" 原样显示即可
   });
-  applyCommon({ series, legend: names, xType: 'time' });
 }
 
 // 区历史K：选中区每日1根K线
@@ -358,7 +384,24 @@ function applyCommon({ series, legend, xType, xData, xLabelFormat, candle }) {
       return header + '<br/>' + lines.join('<br/>');
     };
   } else {
-    tooltip.valueFormatter = v => v != null ? Number(v).toFixed(4) + ' 元/万银' : '--';
+    // category 轴折线（如汇总单日按分钟对齐）：tooltip 显示该时刻各区价格 + 汇总均价
+    tooltip.formatter = params => {
+      if (!params.length) return '';
+      const header = params[0].axisValueLabel;  // X 轴标签(如 "19:35")
+      const valid = params.filter(p => p.value != null);
+      const lines = valid
+        .sort((a, b) => a.value - b.value)
+        .map(item => `${item.marker} ${item.seriesName}: <b>${Number(item.value).toFixed(4)}</b> 元/万银`);
+      let summary = '';
+      if (valid.length > 1) {
+        const avg = valid.reduce((s, p) => s + p.value, 0) / valid.length;
+        const lo = valid[0], hi = valid[valid.length - 1];
+        summary = `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.08);color:#7d8590;font-size:11px">`
+          + `8区均价 <b style="color:#e6edf3">${avg.toFixed(4)}</b> · 最低 <b style="color:#2dd4bf">${lo.seriesName} ${Number(lo.value).toFixed(4)}</b> · 最高 <b style="color:#f85149">${hi.seriesName} ${Number(hi.value).toFixed(4)}</b>`
+          + `</div>`;
+      }
+      return header + '<br/>' + lines.join('<br/>') + summary;
+    };
   }
   chart.setOption({
     backgroundColor: 'transparent',
