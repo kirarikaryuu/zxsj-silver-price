@@ -185,12 +185,11 @@ async function crawl() {
 function gitPush() {
   try {
     execSync('git add -f data/ history.json data.js', { stdio: 'pipe' });
-    const diff = execSync('git diff --staged --quiet', { stdio: 'pipe' });
-    // 有变化才 commit
+    // 没变化时 commit 会失败（nothing to commit），跳过即可
     try {
       const msg = `data: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
       execSync(`git commit -m "${msg}"`, { stdio: 'pipe' });
-    } catch { return; } // 没变化，git diff --quiet 返回非0，跳过
+    } catch { return; }
     execSync('git push', { stdio: 'pipe' });
     console.log(`[${new Date().toLocaleString('zh-CN')}] 数据已推送到 GitHub\n`);
   } catch (e) {
