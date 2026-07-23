@@ -1,0 +1,15 @@
+version: '3'
+services:
+  silver-crawler:
+    build: .
+    container_name: zxsj-silver
+    restart: always
+    ports:
+      - "8090:8090"
+    volumes:
+      # 持久化数据（防止容器重建丢历史）
+      - ./data:/app/data
+    environment:
+      - AUTO_PUSH=1
+      # GitHub PAT token，部署时在 .env 文件里填
+      - GIT_TOKEN=${GIT_TOKEN}

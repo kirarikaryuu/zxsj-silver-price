@@ -11,6 +11,7 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 // ======================== 配置 ========================
 // 8 个区映射（中文区名 => serverId）
@@ -175,6 +176,26 @@ async function crawl() {
   CFG.verifyServerName = false;
 
   console.log(`[${now().toLocaleString('zh-CN')}] 采集结束\n`);
+
+  // NAS 模式：采集后自动 push 数据
+  if (process.env.AUTO_PUSH === '1') await gitPush();
+}
+
+// ======================== Git 自动推送 ========================
+function gitPush() {
+  try {
+    execSync('git add -f data/ history.json data.js', { stdio: 'pipe' });
+    const diff = execSync('git diff --staged --quiet', { stdio: 'pipe' });
+    // 有变化才 commit
+    try {
+      const msg = `data: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
+      execSync(`git commit -m "${msg}"`, { stdio: 'pipe' });
+    } catch { return; } // 没变化，git diff --quiet 返回非0，跳过
+    execSync('git push', { stdio: 'pipe' });
+    console.log(`[${new Date().toLocaleString('zh-CN')}] 数据已推送到 GitHub\n`);
+  } catch (e) {
+    console.error('[gitPush] 推送失败:', e.message);
+  }
 }
 
 function saveRecord(serverName, serverId, rec) {

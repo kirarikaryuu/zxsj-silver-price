@@ -8,10 +8,13 @@ package-lock.json
 # 过程笔记（不部署）
 分析网站POST请求.md
 
-# 采集数据（由 GitHub Actions 维护，避免本地/远程冲突）
+# 采集数据（由 NAS 自动采集 push，避免本地/远程冲突）
 data/
 history.json
 data.js
+
+# Docker 环境变量（含 GitHub token，绝对不能推）
+.env
 
 # 系统文件
 .DS_Store
