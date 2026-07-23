@@ -169,7 +169,16 @@ let curDate = null;       // 单日视图选中的日期
 
 const COLORS = ['#2dd4bf','#f85149','#79c0ff','#d2a8ff','#ffa657','#ff7b72','#56d364','#f0883e'];
 const fmt = v => v != null ? v.toFixed(4) : '--';
-const dayStr = ts => new Date(ts).toISOString().slice(0, 10);
+// 取数据点所属日期（北京时间）。
+// 注意：不能用 toISOString()（UTC），否则凌晨0~8点数据会被算到前一天，
+// 导致日期选择器/汇总视图分类错乱。优先用后端已算好的 date 字段（Asia/Shanghai）。
+const dayStr = (item) => {
+  if (item && item.date) return item.date;        // history.json 里每条记录带 date 字段
+  // 兜底：用本地时区算（浏览器在东八区时与北京时间一致）
+  const d = new Date(item != null && typeof item === 'number' ? item : (item && item.ts) || Date.now());
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+};
 // ISO 时间 → YYYY-MM-DD HH:mm:ss
 const fmtTime = iso => {
   if (!iso || iso === '--') return '--';
@@ -192,7 +201,7 @@ function dayOHLC(samples) {
 function allDates() {
   const set = new Set();
   for (const sname of Object.keys(HISTORY.servers || {})) {
-    for (const s of (HISTORY.servers[sname].data || [])) set.add(dayStr(s.ts));
+    for (const s of (HISTORY.servers[sname].data || [])) set.add(dayStr(s));
   }
   return [...set].sort();
 }
@@ -254,7 +263,7 @@ function renderSummaryHistory() {
     dayAvg[name] = {};
     const m = {};
     for (const s of (HISTORY.servers[name].data || [])) {
-      const d = dayStr(s.ts);
+      const d = dayStr(s);
       if (!m[d]) m[d] = [];
       m[d].push(s.avg);
     }
@@ -285,7 +294,7 @@ function renderSummaryDay() {
   const bucketTime = {};  // { 'HH:mm': 该桶代表的时间戳(用于排序) }
   for (const name of names) {
     for (const s of (HISTORY.servers[name].data || [])) {
-      if (dayStr(s.ts) !== curDate) continue;
+      if (dayStr(s) !== curDate) continue;
       const d = new Date(s.ts);
       const p = n => String(n).padStart(2, '0');
       const key = `${p(d.getHours())}:${p(d.getMinutes())}`;  // 精确到分钟，秒被抹平
@@ -319,7 +328,7 @@ function renderServerHistory() {
   const samples = HISTORY.servers[curServer].data || [];
   const dayMap = {};
   for (const s of samples) {
-    const d = dayStr(s.ts);
+    const d = dayStr(s);
     if (!dayMap[d]) dayMap[d] = [];
     dayMap[d].push(s);
   }
@@ -339,7 +348,7 @@ function renderServerHistory() {
 // 区单日：选中区选中日的分时折线
 function renderServerDay() {
   if (!curServer) return;
-  const samples = (HISTORY.servers[curServer].data || []).filter(s => dayStr(s.ts) === curDate);
+  const samples = (HISTORY.servers[curServer].data || []).filter(s => dayStr(s) === curDate);
   if (!samples.length) {
     chart.setOption({ title: { text: '该日无数据', left: 'center', top: 'center', textStyle: { color: '#7d8590', fontSize: 13 } } });
     return;
