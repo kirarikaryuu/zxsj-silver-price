@@ -28,7 +28,7 @@ const SERVERS = {
 
 const CFG = {
   PORT: 8090,
-  INTERVAL: 5,            // 采集间隔(分钟)
+  INTERVAL: 5,            // 采集间隔(分钟) —— NAS 部署：5分钟一次
   SERVER_GAP: 800,        // 区间请求间隔(毫秒)
   apiUrl: 'https://gw.7881.com/goods-service-api/api/goods/list',
   signKey: 'lb88ebb30d3ecb40d2bd6c7393a835c2c5',
