@@ -3,36 +3,246 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>诛仙世界银两价格走势（8区）</title>
+  <title>诛仙世界 · 银两价格走势</title>
   <script src="echarts.min.js"></script>
-  <!-- 内嵌数据，file:// 双击打开也能显示，app.js 每次采集自动更新此文件 -->
   <script src="data.js"></script>
   <style>
+    :root {
+      /* 带色调的深色基底，非纯黑 */
+      --bg-0: #0d1117;
+      --bg-1: #161b22;
+      --bg-2: #1c2128;
+      /* 统一冷灰系 */
+      --border: rgba(255,255,255,0.06);
+      --fg: #e6edf3;
+      --fg-mute: #7d8590;
+      --fg-dim: #484f58;
+      /* 单一克制强调色（青） */
+      --accent: #2dd4bf;
+      --accent-dim: rgba(45,212,191,0.12);
+      --up: #f85149;
+      --down: #2dd4bf;
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; }
-    .header { text-align: center; padding: 20px; }
-    .header h1 { font-size: 22px; color: #e94560; }
-    .header p { font-size: 13px; color: #888; margin-top: 6px; }
-    .stats { display: flex; justify-content: center; gap: 12px; padding: 10px 20px; flex-wrap: wrap; }
-    .stat-box { background: #16213e; border-radius: 8px; padding: 10px 16px; text-align: center; min-width: 90px; }
-    .stat-box .label { font-size: 12px; color: #888; }
-    .stat-box .value { font-size: 18px; font-weight: bold; margin-top: 4px; color: #00d68f; }
-    .stat-box .value.high { color: #e94560; }
-    .stat-box .value.low { color: #4fc3f7; }
-    #chart { width: 100%; height: 65vh; min-height: 400px; padding: 0 10px; }
-    .footer { text-align: center; padding: 15px; font-size: 12px; color: #555; }
+
+    body {
+      background: var(--bg-0);
+      color: var(--fg);
+      font-family: -apple-system, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      /* 微妙噪点纹理，打破数字平面感 */
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(45,212,191,0.06), transparent),
+        url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.025 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      min-height: 100vh;
+    }
+
+    /* 容器约束 */
+    .wrap {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 0 32px;
+    }
+
+    /* —— 顶栏：非对称，左对齐编辑感 —— */
+    .topbar {
+      padding: 28px 0 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+    }
+    .brand .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 12px var(--accent);
+      align-self: center;
+      flex-shrink: 0;
+    }
+    .brand h1 {
+      font-size: 26px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+    }
+    .brand .sub {
+      font-size: 12px;
+      color: var(--fg-mute);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 500;
+    }
+
+    .meta {
+      display: flex;
+      gap: 28px;
+      margin-top: 14px;
+      font-size: 12px;
+      color: var(--fg-mute);
+      letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .meta span b {
+      color: var(--fg);
+      font-weight: 500;
+      margin-left: 6px;
+    }
+
+    /* —— 统计行：密度更高的数据条，hover spotlight —— */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 24px 0;
+    }
+    .stat {
+      background: var(--bg-1);
+      padding: 16px 14px;
+      position: relative;
+      transition: background 0.25s ease;
+      cursor: default;
+    }
+    .stat:hover {
+      background: var(--bg-2);
+    }
+    /* hover 时的顶部高光边 */
+    .stat::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: transparent;
+      transition: background 0.25s ease;
+    }
+    .stat:hover::before {
+      background: var(--accent);
+    }
+    .stat .name {
+      font-size: 11px;
+      color: var(--fg-mute);
+      letter-spacing: 0.04em;
+      margin-bottom: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .stat .price {
+      font-size: 19px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.01em;
+      color: var(--fg);
+    }
+    .stat .price.up { color: var(--up); }
+    .stat .price.down { color: var(--down); }
+    .stat .rank {
+      font-size: 10px;
+      color: var(--fg-dim);
+      margin-top: 4px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.05em;
+    }
+
+    @media (max-width: 1100px) {
+      .stats { grid-template-columns: repeat(4, 1fr); }
+    }
+    @media (max-width: 600px) {
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .wrap { padding: 0 16px; }
+    }
+
+    /* —— 图表 —— */
+    .chart-wrap {
+      background: var(--bg-1);
+      border-radius: 12px;
+      padding: 20px 8px 8px;
+      position: relative;
+    }
+    .chart-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 16px 12px;
+    }
+    .chart-head .title {
+      font-size: 13px;
+      color: var(--fg-mute);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-weight: 500;
+    }
+    .chart-head .hint {
+      font-size: 11px;
+      color: var(--fg-dim);
+    }
+    #chart {
+      width: 100%;
+      height: 62vh;
+      min-height: 380px;
+    }
+
+    /* —— 底部 —— */
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 20px 0 28px;
+      font-size: 11px;
+      color: var(--fg-dim);
+      letter-spacing: 0.03em;
+    }
+
+    /* —— 空状态 —— */
+    .empty {
+      text-align: center;
+      padding: 80px 20px;
+      color: var(--fg-dim);
+      font-size: 13px;
+      letter-spacing: 0.04em;
+    }
+    .empty .ico {
+      font-size: 28px;
+      color: var(--fg-dim);
+      margin-bottom: 12px;
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>诛仙世界银两价格走势（8区）</h1>
-    <p>数据来源: 7881.com · 单位: 元/万银 · 点击图例可切换显示</p>
-  </div>
-  <div class="stats" id="stats"></div>
-  <div id="chart"></div>
-  <div class="footer">
-    <p>每5分钟自动采集 · 去异常挂单均价 · 串行抓取</p>
-    <p id="updateTime"></p>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <h1>诛仙世界 · 银两行情</h1>
+        <span class="sub">8 Servers · Real-time</span>
+      </div>
+      <div class="meta">
+        <span>数据源<b>7881.com</b></span>
+        <span>单位<b>元 / 万银</b></span>
+        <span>更新<b id="updateTime">--</b></span>
+        <span>采样<b id="totalSamples">--</b></span>
+      </div>
+    </header>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="chart-wrap">
+      <div class="chart-head">
+        <span class="title">价格走势</span>
+        <span class="hint">点击图例切换 · 滚轮缩放</span>
+      </div>
+      <div id="chart"></div>
+    </div>
+
+    <footer class="footer">
+      <span>每 5 分钟采集 · 去异常挂单加权均价</span>
+      <span id="footUpdate">--</span>
+    </footer>
   </div>
 
 <script>
@@ -42,68 +252,96 @@ function render(history) {
   const servers = history.servers || {};
   const names = Object.keys(servers);
 
-  // 每个区一个 series
+  // 每区一条折线
   const series = names.map(name => ({
-    name: name,
+    name,
     type: 'line',
-    smooth: true,
+    smooth: 0.3,
     symbol: 'circle',
-    symbolSize: 5,
+    symbolSize: 4,
     showSymbol: false,
     data: (servers[name].data || []).map(s => [s.ts, s.avg]),
-    lineStyle: { width: 2 },
-    emphasis: { focus: 'series' },
+    lineStyle: { width: 1.8 },
+    emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
   }));
 
-  const chart = echarts.init(document.getElementById('chart'), 'dark');
-  const option = {
+  const chart = echarts.init(document.getElementById('chart'));
+  chart.setOption({
     backgroundColor: 'transparent',
-    color: ['#e94560','#00d68f','#4fc3f7','#ffa500','#b388ff','#ff7eb6','#26c6da','#aed581'],
+    color: ['#2dd4bf','#f85149','#79c0ff','#d2a8ff','#ffa657','#ff7b72','#56d364','#f0883e'],
     tooltip: {
       trigger: 'axis',
-      axisPointer: { type: 'cross' },
+      backgroundColor: 'rgba(13,17,23,0.95)',
+      borderColor: 'rgba(255,255,255,0.08)',
+      borderWidth: 1,
+      textStyle: { color: '#e6edf3', fontSize: 12 },
+      axisPointer: { type: 'line', lineStyle: { color: 'rgba(255,255,255,0.15)', type: 'dashed' } },
       valueFormatter: v => v != null ? Number(v).toFixed(4) + ' 元/万银' : '--',
     },
     legend: {
-      data: names, top: 5, type: 'multi',
-      textStyle: { color: '#ccc' },
+      data: names, top: 8,
+      textStyle: { color: '#7d8590', fontSize: 11 },
+      itemWidth: 12, itemHeight: 2, itemGap: 18,
+      inactiveColor: '#484f58',
     },
-    grid: { left: '8%', right: '5%', bottom: '15%' },
-    xAxis: { type: 'time', axisLabel: { color: '#888' } },
-    yAxis: { type: 'value', scale: true, name: '元/万银', axisLabel: { color: '#888' } },
+    grid: { left: 56, right: 24, top: 48, bottom: 56 },
+    xAxis: {
+      type: 'time',
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+      axisLabel: { color: '#7d8590', fontSize: 11, hideOverlap: true },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value', scale: true,
+      axisLabel: {
+        color: '#7d8590', fontSize: 11,
+        formatter: v => v.toFixed(3),
+      },
+      axisLine: { show: false },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+    },
     dataZoom: [
       { type: 'inside', start: 0, end: 100 },
-      { type: 'slider', start: 0, end: 100 },
+      { type: 'slider', start: 0, end: 100, height: 18, bottom: 16,
+        borderColor: 'transparent', backgroundColor: 'rgba(255,255,255,0.02)',
+        fillerColor: 'rgba(45,212,191,0.08)', handleStyle: { color: '#2dd4bf' },
+        textStyle: { color: '#7d8590', fontSize: 10 } },
     ],
-    series: series,
-  };
-  chart.setOption(option);
+    series,
+  });
   window.addEventListener('resize', () => chart.resize());
 
-  // 统计卡片：各区最新均价（从高到低）
-  document.getElementById('updateTime').textContent =
-    '最后更新: ' + (history.lastUpdate || '--');
+  // 统计行：各区最新均价排序
+  const t = history.lastUpdate || '--';
+  document.getElementById('updateTime').textContent = t;
+  document.getElementById('footUpdate').textContent = 'Last update · ' + t;
+  document.getElementById('totalSamples').textContent = (history.totalSamples || 0) + ' pts';
 
   const latest = names.map(n => {
     const arr = servers[n].data || [];
-    return { name: n, value: arr.length ? arr[arr.length - 1].avg : null, count: arr.length };
+    return { name: n, value: arr.length ? arr[arr.length - 1].avg : null };
   }).filter(x => x.value != null).sort((a, b) => b.value - a.value);
 
-  const maxV = latest[0]?.value || 0;
-  const minV = latest[latest.length - 1]?.value || 0;
+  const maxV = latest[0]?.value;
+  const minV = latest[latest.length - 1]?.value;
 
-  document.getElementById('stats').innerHTML = latest.map(s => {
+  document.getElementById('stats').innerHTML = latest.map((s, i) => {
     let cls = '';
-    if (s.value === maxV) cls = 'high';
-    else if (s.value === minV) cls = 'low';
-    return `<div class="stat-box"><div class="label">${s.name}</div><div class="value ${cls}">${fmt(s.value)}</div></div>`;
+    if (s.value === maxV) cls = 'up';      // 最高价标红
+    else if (s.value === minV) cls = 'down'; // 最低标青
+    return `<div class="stat">
+      <div class="name">${s.name}</div>
+      <div class="price ${cls}">${fmt(s.value)}</div>
+      <div class="rank">#${String(i + 1).padStart(2, '0')}</div>
+    </div>`;
   }).join('');
 }
 
 function start(history) {
   if (!history || !history.servers || Object.keys(history.servers).length === 0) {
+    document.getElementById('stats').innerHTML = '';
     document.getElementById('chart').innerHTML =
-      '<p style="text-align:center;padding-top:100px;color:#666">暂无数据，请先运行 node app.js 采集</p>';
+      '<div class="empty"><div class="ico">—</div>暂无数据，请先运行 node app.js 采集</div>';
     return;
   }
   render(history);
@@ -117,7 +355,7 @@ if (window.__HISTORY__) {
     .then(start)
     .catch(() => {
       document.getElementById('chart').innerHTML =
-        '<p style="text-align:center;padding-top:100px;color:#666">数据加载失败，请先运行 node app.js</p>';
+        '<div class="empty"><div class="ico">—</div>数据加载失败，请先运行 node app.js</div>';
     });
 }
 </script>
