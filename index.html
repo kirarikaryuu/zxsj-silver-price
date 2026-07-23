@@ -8,208 +8,119 @@
   <script src="data.js"></script>
   <style>
     :root {
-      /* 带色调的深色基底，非纯黑 */
       --bg-0: #0d1117;
       --bg-1: #161b22;
       --bg-2: #1c2128;
-      /* 统一冷灰系 */
       --border: rgba(255,255,255,0.06);
+      --border-strong: rgba(255,255,255,0.12);
       --fg: #e6edf3;
       --fg-mute: #7d8590;
       --fg-dim: #484f58;
-      /* 单一克制强调色（青） */
       --accent: #2dd4bf;
       --accent-dim: rgba(45,212,191,0.12);
       --up: #f85149;
       --down: #2dd4bf;
     }
-
     * { margin: 0; padding: 0; box-sizing: border-box; }
-
     body {
       background: var(--bg-0);
       color: var(--fg);
       font-family: -apple-system, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
       -webkit-font-smoothing: antialiased;
-      /* 微妙噪点纹理，打破数字平面感 */
       background-image:
         radial-gradient(ellipse 80% 50% at 50% -20%, rgba(45,212,191,0.06), transparent),
         url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.025 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
       min-height: 100vh;
     }
+    .wrap { max-width: 1440px; margin: 0 auto; padding: 0 32px; }
 
-    /* 容器约束 */
-    .wrap {
-      max-width: 1440px;
-      margin: 0 auto;
-      padding: 0 32px;
-    }
-
-    /* —— 顶栏：非对称，左对齐编辑感 —— */
-    .topbar {
-      padding: 28px 0 20px;
-      border-bottom: 1px solid var(--border);
-    }
-    .brand {
-      display: flex;
-      align-items: baseline;
-      gap: 14px;
-    }
+    .topbar { padding: 28px 0 20px; border-bottom: 1px solid var(--border); }
+    .brand { display: flex; align-items: baseline; gap: 14px; }
     .brand .dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 12px var(--accent);
-      align-self: center;
-      flex-shrink: 0;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent); box-shadow: 0 0 12px var(--accent);
+      align-self: center; flex-shrink: 0;
     }
-    .brand h1 {
-      font-size: 26px;
-      font-weight: 600;
-      letter-spacing: -0.02em;
-      line-height: 1.2;
-    }
+    .brand h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; }
     .brand .sub {
-      font-size: 12px;
-      color: var(--fg-mute);
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      font-weight: 500;
+      font-size: 12px; color: var(--fg-mute);
+      letter-spacing: 0.08em; text-transform: uppercase; font-weight: 500;
     }
-
     .meta {
-      display: flex;
-      gap: 28px;
-      margin-top: 14px;
-      font-size: 12px;
-      color: var(--fg-mute);
-      letter-spacing: 0.02em;
+      display: flex; gap: 28px; margin-top: 14px;
+      font-size: 12px; color: var(--fg-mute);
       font-variant-numeric: tabular-nums;
     }
-    .meta span b {
-      color: var(--fg);
-      font-weight: 500;
-      margin-left: 6px;
-    }
+    .meta span b { color: var(--fg); font-weight: 500; margin-left: 6px; }
 
-    /* —— 统计行：密度更高的数据条，hover spotlight —— */
+    /* 视图 Tab + 控件行 */
+    .controls {
+      display: flex; align-items: center; gap: 16px;
+      margin: 20px 0; flex-wrap: wrap;
+    }
+    .tabs { display: flex; gap: 2px; background: var(--bg-1); border-radius: 8px; padding: 3px; }
+    .tab {
+      padding: 7px 14px; font-size: 12px; color: var(--fg-mute);
+      border-radius: 6px; cursor: pointer; transition: all 0.2s;
+      font-weight: 500; letter-spacing: 0.02em; user-select: none;
+    }
+    .tab:hover { color: var(--fg); }
+    .tab.active { background: var(--bg-2); color: var(--fg); }
+    .ctrl-spacer { flex: 1; }
+    .date-pick {
+      background: var(--bg-1); border: 1px solid var(--border);
+      color: var(--fg); padding: 6px 12px; border-radius: 8px;
+      font-size: 12px; font-family: inherit; font-variant-numeric: tabular-nums;
+      color-scheme: dark;
+    }
+    .date-pick:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* 统计卡片 */
     .stats {
-      display: grid;
-      grid-template-columns: repeat(8, 1fr);
-      gap: 1px;
-      background: var(--border);
-      border-radius: 10px;
-      overflow: hidden;
-      margin: 24px 0;
+      display: grid; grid-template-columns: repeat(8, 1fr);
+      gap: 1px; background: var(--border);
+      border-radius: 10px; overflow: hidden; margin-bottom: 20px;
     }
     .stat {
-      background: var(--bg-1);
-      padding: 16px 14px;
-      position: relative;
-      transition: background 0.25s ease;
-      cursor: default;
+      background: var(--bg-1); padding: 16px 14px;
+      position: relative; transition: background 0.25s ease; cursor: default;
     }
-    .stat:hover {
-      background: var(--bg-2);
-    }
-    /* hover 时的顶部高光边 */
+    .stat.clickable { cursor: pointer; }
+    .stat.clickable:hover { background: var(--bg-2); }
+    .stat.clickable:hover::before { background: var(--accent); }
+    .stat.selected { background: var(--bg-2); }
+    .stat.selected::before { background: var(--accent); }
     .stat::before {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 1px;
-      background: transparent;
-      transition: background 0.25s ease;
-    }
-    .stat:hover::before {
-      background: var(--accent);
+      content: ''; position: absolute; top: 0; left: 0; right: 0;
+      height: 1px; background: transparent; transition: background 0.25s ease;
     }
     .stat .name {
-      font-size: 11px;
-      color: var(--fg-mute);
-      letter-spacing: 0.04em;
-      margin-bottom: 8px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      font-size: 11px; color: var(--fg-mute); letter-spacing: 0.04em;
+      margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .stat .price {
-      font-size: 19px;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      letter-spacing: -0.01em;
-      color: var(--fg);
+      font-size: 19px; font-weight: 600;
+      font-variant-numeric: tabular-nums; letter-spacing: -0.01em; color: var(--fg);
     }
     .stat .price.up { color: var(--up); }
     .stat .price.down { color: var(--down); }
     .stat .rank {
-      font-size: 10px;
-      color: var(--fg-dim);
-      margin-top: 4px;
-      font-variant-numeric: tabular-nums;
-      letter-spacing: 0.05em;
+      font-size: 10px; color: var(--fg-dim); margin-top: 4px;
+      font-variant-numeric: tabular-nums; letter-spacing: 0.05em;
     }
+    @media (max-width: 1100px) { .stats { grid-template-columns: repeat(4, 1fr); } }
+    @media (max-width: 600px) { .stats { grid-template-columns: repeat(2, 1fr); } .wrap { padding: 0 16px; } }
 
-    @media (max-width: 1100px) {
-      .stats { grid-template-columns: repeat(4, 1fr); }
-    }
-    @media (max-width: 600px) {
-      .stats { grid-template-columns: repeat(2, 1fr); }
-      .wrap { padding: 0 16px; }
-    }
-
-    /* —— 图表 —— */
-    .chart-wrap {
-      background: var(--bg-1);
-      border-radius: 12px;
-      padding: 20px 8px 8px;
-      position: relative;
-    }
-    .chart-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0 16px 12px;
-    }
-    .chart-head .title {
-      font-size: 13px;
-      color: var(--fg-mute);
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      font-weight: 500;
-    }
-    .chart-head .hint {
-      font-size: 11px;
-      color: var(--fg-dim);
-    }
-    #chart {
-      width: 100%;
-      height: 62vh;
-      min-height: 380px;
-    }
-
-    /* —— 底部 —— */
+    /* 图表 */
+    .chart-wrap { background: var(--bg-1); border-radius: 12px; padding: 20px 8px 8px; }
+    #chart { width: 100%; height: 60vh; min-height: 360px; }
     .footer {
-      display: flex;
-      justify-content: space-between;
-      padding: 20px 0 28px;
-      font-size: 11px;
-      color: var(--fg-dim);
-      letter-spacing: 0.03em;
+      display: flex; justify-content: space-between;
+      padding: 20px 0 28px; font-size: 11px; color: var(--fg-dim); letter-spacing: 0.03em;
     }
-
-    /* —— 空状态 —— */
     .empty {
-      text-align: center;
-      padding: 80px 20px;
-      color: var(--fg-dim);
-      font-size: 13px;
-      letter-spacing: 0.04em;
-    }
-    .empty .ico {
-      font-size: 28px;
-      color: var(--fg-dim);
-      margin-bottom: 12px;
+      text-align: center; padding: 80px 20px;
+      color: var(--fg-dim); font-size: 13px; letter-spacing: 0.04em;
     }
   </style>
 </head>
@@ -219,7 +130,7 @@
       <div class="brand">
         <span class="dot"></span>
         <h1>诛仙世界 · 银两行情</h1>
-        <span class="sub">8 Servers · Real-time</span>
+        <span class="sub">8 区服务器 · 实时行情</span>
       </div>
       <div class="meta">
         <span>数据源<b>7881.com</b></span>
@@ -229,15 +140,20 @@
       </div>
     </header>
 
+    <div class="controls">
+      <div class="tabs" id="tabs">
+        <div class="tab active" data-view="summary-history">汇总历史</div>
+        <div class="tab" data-view="summary-day">汇总单日</div>
+        <div class="tab" data-view="server-history">区历史K</div>
+        <div class="tab" data-view="server-day">区单日</div>
+      </div>
+      <div class="ctrl-spacer"></div>
+      <input type="date" class="date-pick" id="datePick" disabled />
+    </div>
+
     <div class="stats" id="stats"></div>
 
-    <div class="chart-wrap">
-      <div class="chart-head">
-        <span class="title">价格走势</span>
-        <span class="hint">点击图例切换 · 滚轮缩放</span>
-      </div>
-      <div id="chart"></div>
-    </div>
+    <div class="chart-wrap"><div id="chart"></div></div>
 
     <footer class="footer">
       <span>每 5 分钟采集 · 去异常挂单加权均价</span>
@@ -246,57 +162,201 @@
   </div>
 
 <script>
-function fmt(v) { return v != null ? v.toFixed(4) : '--'; }
+let HISTORY = null;
+let chart = null;
+let curView = 'summary-history';
+let curServer = null;     // 区视图选中的区
+let curDate = null;       // 单日视图选中的日期
 
-function render(history) {
-  const servers = history.servers || {};
-  const names = Object.keys(servers);
+const COLORS = ['#2dd4bf','#f85149','#79c0ff','#d2a8ff','#ffa657','#ff7b72','#56d364','#f0883e'];
+const fmt = v => v != null ? v.toFixed(4) : '--';
+const dayStr = ts => new Date(ts).toISOString().slice(0, 10);
+// ISO 时间 → YYYY-MM-DD HH:mm:ss
+const fmtTime = iso => {
+  if (!iso || iso === '--') return '--';
+  const d = new Date(iso);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
 
-  // 每区一条折线
-  const series = names.map(name => ({
-    name,
-    type: 'line',
-    smooth: 0.3,
-    symbol: 'circle',
-    symbolSize: 4,
-    showSymbol: false,
-    data: (servers[name].data || []).map(s => [s.ts, s.avg]),
-    lineStyle: { width: 1.8 },
-    emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
-  }));
+// 聚合：某区某天所有采样点 → OHLC
+function dayOHLC(samples) {
+  if (!samples.length) return null;
+  const open = samples[0].avg;
+  const close = samples[samples.length - 1].avg;
+  const high = Math.max(...samples.map(s => s.high));
+  const low = Math.min(...samples.map(s => s.low));
+  return [open, close, low, high];
+}
 
-  const chart = echarts.init(document.getElementById('chart'));
+// 获取所有有数据的日期（排序）
+function allDates() {
+  const set = new Set();
+  for (const sname of Object.keys(HISTORY.servers || {})) {
+    for (const s of (HISTORY.servers[sname].data || [])) set.add(dayStr(s.ts));
+  }
+  return [...set].sort();
+}
+
+// 渲染统计卡片（固定显示最新均价排名）
+function renderStats() {
+  const names = Object.keys(HISTORY.servers || {});
+  const latest = names.map(n => {
+    const arr = HISTORY.servers[n].data || [];
+    return { name: n, value: arr.length ? arr[arr.length - 1].avg : null };
+  }).filter(x => x.value != null).sort((a, b) => b.value - a.value);
+  const maxV = latest[0]?.value, minV = latest[latest.length - 1]?.value;
+
+  const isServerView = curView.startsWith('server');
+  document.getElementById('stats').innerHTML = latest.map((s, i) => {
+    let cls = '';
+    if (s.value === maxV) cls = 'up';
+    else if (s.value === minV) cls = 'down';
+    const clickable = isServerView ? 'clickable' : '';
+    const selected = (isServerView && s.name === curServer) ? 'selected' : '';
+    return `<div class="stat ${clickable} ${selected}" data-server="${s.name}">
+      <div class="name">${s.name}</div>
+      <div class="price ${cls}">${fmt(s.value)}</div>
+      <div class="rank">#${String(i + 1).padStart(2, '0')}</div>
+    </div>`;
+  }).join('');
+
+  if (isServerView) {
+    document.querySelectorAll('.stat.clickable').forEach(el => {
+      el.addEventListener('click', () => {
+        curServer = el.dataset.server;
+        renderStats(); renderChart();
+      });
+    });
+  }
+}
+
+// ========== 4 种视图渲染 ==========
+function renderChart() {
+  if (chart) { chart.dispose(); chart = null; }
+  if (!HISTORY || !HISTORY.servers) return;
+  chart = echarts.init(document.getElementById('chart'));
+
+  if (curView === 'summary-history') renderSummaryHistory();
+  else if (curView === 'summary-day') renderSummaryDay();
+  else if (curView === 'server-history') renderServerHistory();
+  else if (curView === 'server-day') renderServerDay();
+
+  window.addEventListener('resize', () => chart && chart.resize());
+}
+
+// 汇总历史：8区每日均价折线
+function renderSummaryHistory() {
+  const names = Object.keys(HISTORY.servers);
+  const series = names.map((name, idx) => {
+    const dayMap = {};
+    for (const s of (HISTORY.servers[name].data || [])) {
+      const d = dayStr(s.ts);
+      if (!dayMap[d]) dayMap[d] = [];
+      dayMap[d].push(s.avg);
+    }
+    const dates = Object.keys(dayMap).sort();
+    return {
+      name, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 5, showSymbol: dates.length < 30,
+      data: dates.map(d => [new Date(d).getTime(), dayMap[d].reduce((a, b) => a + b, 0) / dayMap[d].length]),
+      lineStyle: { width: 1.8 }, emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
+    };
+  });
+  applyCommon({ series, legend: names, xType: 'time', xLabelFormat: '{yyyy}-{MM}-{dd}' });
+}
+
+// 汇总单日：8区当天所有采样点折线
+function renderSummaryDay() {
+  const names = Object.keys(HISTORY.servers);
+  const series = names.map(name => {
+    const samples = (HISTORY.servers[name].data || []).filter(s => dayStr(s.ts) === curDate);
+    return {
+      name, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 4, showSymbol: true,
+      data: samples.map(s => [s.ts, s.avg]),
+      lineStyle: { width: 1.8 }, emphasis: { focus: 'series' },
+    };
+  });
+  applyCommon({ series, legend: names, xType: 'time' });
+}
+
+// 区历史K：选中区每日1根K线
+function renderServerHistory() {
+  if (!curServer) return;
+  const samples = HISTORY.servers[curServer].data || [];
+  const dayMap = {};
+  for (const s of samples) {
+    const d = dayStr(s.ts);
+    if (!dayMap[d]) dayMap[d] = [];
+    dayMap[d].push(s);
+  }
+  const dates = Object.keys(dayMap).sort();
+  const ohlc = dates.map(d => dayOHLC(dayMap[d]));
+
+  applyCommon({
+    candle: true,
+    series: [{
+      name: curServer, type: 'candlestick', data: ohlc,
+      itemStyle: { color: '#f85149', color0: '#2dd4bf', borderColor: '#f85149', borderColor0: '#2dd4bf' },
+    }],
+    xType: 'category', xData: dates, legend: [curServer],
+  });
+}
+
+// 区单日：选中区选中日的分时折线
+function renderServerDay() {
+  if (!curServer) return;
+  const samples = (HISTORY.servers[curServer].data || []).filter(s => dayStr(s.ts) === curDate);
+  if (!samples.length) {
+    chart.setOption({ title: { text: '该日无数据', left: 'center', top: 'center', textStyle: { color: '#7d8590', fontSize: 13 } } });
+    return;
+  }
+  applyCommon({
+    series: [{
+      name: curServer, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 4, showSymbol: true,
+      data: samples.map(s => [s.ts, s.avg]),
+      lineStyle: { width: 1.8 }, emphasis: { focus: 'series' },
+      areaStyle: { color: 'rgba(45,212,191,0.08)' },
+    }],
+    legend: [curServer], xType: 'time',
+  });
+}
+
+// 通用 option 应用
+function applyCommon({ series, legend, xType, xData, xLabelFormat, candle }) {
+  const tooltip = {
+    trigger: 'axis', axisPointer: { type: 'cross', lineStyle: { color: 'rgba(255,255,255,0.15)', type: 'dashed' } },
+    backgroundColor: 'rgba(13,17,23,0.95)', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+    textStyle: { color: '#e6edf3', fontSize: 12 },
+  };
+  if (candle) {
+    // K线图：自定义 axis tooltip，把 OHLC 翻译成中文
+    tooltip.formatter = params => {
+      const p = params.find(x => x.seriesType === 'candlestick');
+      if (!p) return '';
+      return `${p.seriesName}<br/>` +
+        `开盘 <b>${p.value[1].toFixed(4)}</b> · 收盘 <b>${p.value[2].toFixed(4)}</b><br/>` +
+        `最低 <b>${p.value[3].toFixed(4)}</b> · 最高 <b>${p.value[4].toFixed(4)}</b>`;
+    };
+  } else {
+    tooltip.valueFormatter = v => v != null ? Number(v).toFixed(4) + ' 元/万银' : '--';
+  }
   chart.setOption({
     backgroundColor: 'transparent',
-    color: ['#2dd4bf','#f85149','#79c0ff','#d2a8ff','#ffa657','#ff7b72','#56d364','#f0883e'],
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: 'rgba(13,17,23,0.95)',
-      borderColor: 'rgba(255,255,255,0.08)',
-      borderWidth: 1,
-      textStyle: { color: '#e6edf3', fontSize: 12 },
-      axisPointer: { type: 'line', lineStyle: { color: 'rgba(255,255,255,0.15)', type: 'dashed' } },
-      valueFormatter: v => v != null ? Number(v).toFixed(4) + ' 元/万银' : '--',
-    },
-    legend: {
-      data: names, top: 8,
-      textStyle: { color: '#7d8590', fontSize: 11 },
-      itemWidth: 12, itemHeight: 2, itemGap: 18,
-      inactiveColor: '#484f58',
-    },
+    color: COLORS,
+    tooltip,
+    legend: { data: legend, top: 8, textStyle: { color: '#7d8590', fontSize: 11 },
+      itemWidth: 12, itemHeight: 2, itemGap: 18, inactiveColor: '#484f58' },
     grid: { left: 56, right: 24, top: 48, bottom: 56 },
     xAxis: {
-      type: 'time',
+      type: xType,
+      ...(xData ? { data: xData } : {}),
       axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
-      axisLabel: { color: '#7d8590', fontSize: 11, hideOverlap: true },
+      axisLabel: { color: '#7d8590', fontSize: 11, hideOverlap: true, ...(xLabelFormat ? { formatter: xLabelFormat } : {}) },
       splitLine: { show: false },
     },
     yAxis: {
       type: 'value', scale: true,
-      axisLabel: {
-        color: '#7d8590', fontSize: 11,
-        formatter: v => v.toFixed(3),
-      },
+      axisLabel: { color: '#7d8590', fontSize: 11, formatter: v => v.toFixed(4) },
       axisLine: { show: false },
       splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
     },
@@ -309,42 +369,57 @@ function render(history) {
     ],
     series,
   });
-  window.addEventListener('resize', () => chart.resize());
+}
 
-  // 统计行：各区最新均价排序
-  const t = history.lastUpdate || '--';
-  document.getElementById('updateTime').textContent = t;
-  document.getElementById('footUpdate').textContent = 'Last update · ' + t;
-  document.getElementById('totalSamples').textContent = (history.totalSamples || 0) + ' pts';
+// ========== 交互绑定 ==========
+function bindControls() {
+  // Tab 切换
+  document.querySelectorAll('.tab').forEach(el => {
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      el.classList.add('active');
+      curView = el.dataset.view;
 
-  const latest = names.map(n => {
-    const arr = servers[n].data || [];
-    return { name: n, value: arr.length ? arr[arr.length - 1].avg : null };
-  }).filter(x => x.value != null).sort((a, b) => b.value - a.value);
+      const needDate = curView.endsWith('day');
+      const isServerView = curView.startsWith('server');
+      document.getElementById('datePick').disabled = !needDate;
 
-  const maxV = latest[0]?.value;
-  const minV = latest[latest.length - 1]?.value;
+      // 区视图默认选第一个区
+      if (isServerView && !curServer) {
+        curServer = Object.keys(HISTORY.servers)[0];
+      }
+      renderStats();
+      renderChart();
+    });
+  });
 
-  document.getElementById('stats').innerHTML = latest.map((s, i) => {
-    let cls = '';
-    if (s.value === maxV) cls = 'up';      // 最高价标红
-    else if (s.value === minV) cls = 'down'; // 最低标青
-    return `<div class="stat">
-      <div class="name">${s.name}</div>
-      <div class="price ${cls}">${fmt(s.value)}</div>
-      <div class="rank">#${String(i + 1).padStart(2, '0')}</div>
-    </div>`;
-  }).join('');
+  // 日期选择
+  document.getElementById('datePick').addEventListener('change', (e) => {
+    curDate = e.target.value;
+    renderChart();
+  });
 }
 
 function start(history) {
   if (!history || !history.servers || Object.keys(history.servers).length === 0) {
-    document.getElementById('stats').innerHTML = '';
-    document.getElementById('chart').innerHTML =
-      '<div class="empty"><div class="ico">—</div>暂无数据，请先运行 node app.js 采集</div>';
+    document.getElementById('chart').innerHTML = '<div class="empty">暂无数据，请先运行 node app.js 采集</div>';
     return;
   }
-  render(history);
+  HISTORY = history;
+  const dates = allDates();
+  const dp = document.getElementById('datePick');
+  dp.min = dates[0];
+  dp.max = dates[dates.length - 1];
+  curDate = dates[dates.length - 1];
+  dp.value = curDate;
+
+  document.getElementById('updateTime').textContent = fmtTime(history.lastUpdate);
+  document.getElementById('footUpdate').textContent = '最后更新 · ' + fmtTime(history.lastUpdate);
+  document.getElementById('totalSamples').textContent = (history.totalSamples || 0) + ' 点';
+
+  bindControls();
+  renderStats();
+  renderChart();
 }
 
 if (window.__HISTORY__) {
@@ -354,8 +429,7 @@ if (window.__HISTORY__) {
     .then(r => r.json())
     .then(start)
     .catch(() => {
-      document.getElementById('chart').innerHTML =
-        '<div class="empty"><div class="ico">—</div>数据加载失败，请先运行 node app.js</div>';
+      document.getElementById('chart').innerHTML = '<div class="empty">数据加载失败，请先运行 node app.js</div>';
     });
 }
 </script>

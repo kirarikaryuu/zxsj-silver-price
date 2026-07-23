@@ -131,7 +131,9 @@ async function crawlOne(serverName, serverId) {
 
           // 去异常挂单 + 取前N
           const all = items.map(i => i.unitPrice);
-          const valid = removeOutliers(all).slice(0, CFG.sampleSize);
+          const inRange = removeOutliers(all);
+          const outliers = all.length - inRange.length;
+          const valid = inRange.slice(0, CFG.sampleSize);
           // 加权平均：前三条权重大
           const wSum = CFG.weights.reduce((a, b) => a + b, 0);
           let wAcc = 0;
@@ -142,7 +144,7 @@ async function crawlOne(serverName, serverId) {
           const high = Math.max(...valid);
           const low = Math.min(...valid);
 
-          console.log(`  [${serverName}] 均价 ${avg.toFixed(4)} | ${low.toFixed(4)}~${high.toFixed(4)} | 有效${valid.length}/异常${all.length - valid.length}`);
+          console.log(`  [${serverName}] 均价 ${avg.toFixed(4)} | ${low.toFixed(4)}~${high.toFixed(4)} | 共${all.length} 挂单 / 范围内${inRange.length} / 异常${outliers} / 取前${valid.length}`);
           resolve({ ts: Date.now(), avg, high, low, open: valid[0], close: valid[valid.length - 1], sampleCount: valid.length });
         } catch (e) {
           console.error(`  [${serverName}] 解析失败: ${e.message}`);
