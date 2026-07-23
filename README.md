@@ -2,27 +2,31 @@
 
 # 诛仙世界 · 银两行情监控
 
-**8 区银两价格实时采集 · 走势可视化 · GitHub Actions 自动驱动**
+**8 区银两价格实时采集 · 走势可视化 · NAS Docker 常驻驱动**
 
-[![Actions](https://img.shields.io/badge/Actions-每30分钟采集-2dd4bf?style=flat-square\&logo=githubactions\&logoColor=white)](https://github.com/kirarikaryuu/zxsj-silver-price/actions)
-[![License](https://img.shields.io/badge/License-MIT-79c0ff?style=flat-square)](LICENSE)
-[![Node](https://img.shields.io/badge/Node-%3E%3D18-68a063?style=flat-square\&logo=node.js\&logoColor=white)](https://nodejs.org)
-[![Zero Deps](https://img.shields.io/badge/依赖-零原生依赖-ffa657?style=flat-square)]()
+[![Deploy](https://img.shields.io/badge/部署-NAS%20Docker-2dd4bf?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
+[![Pages](https://img.shields.io/badge/展示-GitHub%20Pages-79c0ff?style=flat-square&logo=githubpages&logoColor=white)](https://kirarikaryuu.github.io/zxsj-silver-price/)
+[![License](https://img.shields.io/badge/License-MIT-ffa657?style=flat-square)](LICENSE)
+[![Node](https://img.shields.io/badge/Node-%3E%3D18-68a063?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
+[![Zero Deps](https://img.shields.io/badge/依赖-零原生依赖-f85149?style=flat-square)]()
 
 </div>
 
 ***
 
-> 一个自动化的游戏虚拟货币价格监控工具，从 7881 交易平台的公开接口采集 8 个服务器的银两挂单数据，计算去异常加权均价，并通过 GitHub Pages 提供 4 种交互式可视化视图。
+> 一个自动化的游戏虚拟货币价格监控工具，从 7881 交易平台公开接口采集 8 个服务器的银两挂单数据，计算去异常加权均价，并通过 GitHub Pages 提供 4 种交互式可视化视图。
+>
+> 采集端运行在极空间 NAS 的 Docker 容器里（每 5 分钟一次），通过 GitHub Contents API 把数据推回仓库，Pages 自动部署更新网页。
 
 ## ✨ 特性
 
-- **8 区并行采集** — 串行请求 + 区间间隔，温和不触发风控
+- **8 区并行采集** — 串行请求 + 区间间隔，温和不触发风控；单区失败自动重试 1 次
 - **去异常挂单** — 硬范围过滤（0.1\~10 元/万银）剔除解析错误与恶意挂单
 - **加权均价** — 前 5 条按权重 `[3, 2.5, 2, 1.5, 1]` 计算，前三条占比 75%，贴近真实成交价
 - **4 种视图** — 汇总历史 / 汇总单日 / 区历史 K 线 / 区单日分时
-- **全自动化** — GitHub Actions 每 30 分钟采集 + 自动 commit + Pages 部署
-- **零成本** — 纯静态站点，免费托管，无服务器、无数据库
+- **NAS 常驻** — Docker 容器每 5 分钟采集一次，开机自启，数据持久化
+- **API 推送** — 通过 GitHub Contents REST API 上传数据，带超时/重试/sha 缓存，稳定不卡死
+- **零成本** — 纯静态站点 + Pages 免费托管，无服务器、无数据库
 
 ## 📊 监控服务器
 
@@ -42,13 +46,85 @@
 | 视图        | 类型      | 说明               |
 | --------- | ------- | ---------------- |
 | **汇总历史**  | 8 区折线   | 全部历史日均价对比，趋势一目了然 |
-| **汇总单日**  | 8 区折线   | 选定日的分时走势，8 区叠加   |
+| **汇总单日**  | 8 区折线   | 选定日的分时走势，按分钟分桶对齐 8 区，tooltip 汇总显示均价/最低/最高 |
 | **区历史 K** | 单区日 K 线 | 每日 1 根蜡烛，红涨青跌    |
 | **区单日**   | 单区分时    | 选定日的分时折线 + 面积图   |
 
-## 🚀 快速开始
+## 🏗 架构
 
-### 本地运行
+```
+极空间 NAS (Docker 容器, 每5分钟)
+        │
+        ▼
+   node app.js
+   ├── 构造请求体 (serverId)
+   ├── 双重 MD5 签名
+   ├── POST gw.7881.com/api/goods/list × 8 (串行+间隔, 失败重试1次)
+   ├── 去异常 + 加权均价
+   ├── 写入 data/ + history.json + data.js
+   └── GitHub Contents API 上传 (3文件, 带重试/sha缓存)
+        │
+        ▼
+   GitHub main 分支更新
+        │
+        ▼
+   Pages 自动部署
+   └── index.html 读取 data.js 渲染 ECharts
+```
+
+> **为什么不用 GitHub Actions 采集？** 7881 接口封了 GitHub Actions 的出口 IP 段，采集会失败。改用 NAS Docker 走家庭宽带 IP 即可正常采集。原 Actions workflow 已禁用（`.github/workflows/silver-crawler.yml.disabled`）。
+
+> **为什么用 API 而不是 git push？** 容器内访问 `github.com`（git 协议）极不稳定，git 子进程会卡死堆积阻塞采集循环。改用 `api.github.com` 的 Contents REST API（稳定），每个文件一次 HTTPS 请求，要么成功要么快速失败。
+
+## 🚀 部署到 NAS Docker（推荐）
+
+### 1. 生成 GitHub Token
+
+数据需要 push 回仓库触发 Pages 更新，需要一个写权限 token：
+
+1. 打开 https://github.com/settings/tokens （classic，勾 `repo`）或 https://github.com/settings/personal-access-tokens （fine-grained，Contents 设为 Read and write）
+2. 生成并复制 token（形如 `ghp_xxx` 或 `github_pat_xxx`）
+
+### 2. 在 NAS 上拉取项目
+
+```bash
+git clone https://github.com/kirarikaryuu/zxsj-silver-price.git
+cd zxsj-silver-price
+```
+
+### 3. 构建镜像并启动
+
+```bash
+docker build -t zxsj-silver .
+docker run -d \
+  --name zxsj-silver \
+  --restart always \
+  --network host \
+  -v "$PWD/data":/app/data \
+  -e AUTO_PUSH=1 \
+  -e GIT_TOKEN=ghp_你的token \
+  zxsj-silver
+```
+
+> **`--network host` 很关键**：极空间 Docker 默认 bridge 网络访问 `github.com` 不稳定，host 模式直接用宿主机网络栈，访问 `api.github.com` 稳定。
+>
+> **`-v data`**：数据持久化，容器重建不丢历史。
+
+### 4. 验证
+
+```bash
+docker logs -f zxsj-silver
+```
+
+看到 `采集结束 成功8/8 (100%)` 和 `数据已推送到 GitHub (3 文件)` 即正常。
+
+### 在线访问
+
+```
+https://<你的GitHub用户名>.github.io/zxsj-silver-price/
+```
+
+## 🔧 本地运行（开发/调试）
 
 ```bash
 git clone https://github.com/kirarikaryuu/zxsj-silver-price.git
@@ -56,53 +132,38 @@ cd zxsj-silver-price
 node app.js
 ```
 
-打开 <http://localhost:8090>
-
-### 在线访问
-
-```
-https://kirarikaryuu.github.io/zxsj-silver-price/
-```
+打开 <http://localhost:8090>。本地模式默认启动 Web 服务、不自动推送（采集数据只写本地）。
 
 ## ⚙️ 配置
+
+### 环境变量
+
+| 变量 | 说明 | 默认 |
+|---|---|---|
+| `AUTO_PUSH=1` | 启用采集后自动推送数据到 GitHub（NAS 模式） | 关 |
+| `GIT_TOKEN` | GitHub Personal Access Token（推送用） | - |
+| `WEB_SERVER=1` | 强制启动容器内 Web 服务 | NAS模式关，本地开 |
+| `CI_MODE=1` | 只采集一轮就退出（CI 测试用） | 关 |
+
+**Web 服务开关逻辑**：
+- `AUTO_PUSH=1`（NAS 模式）→ 默认**关闭** Web（纯采集器，省资源、避免端口冲突，通过 Pages 看数据）
+- 显式 `WEB_SERVER=1` → 强制开启
+- 本地开发（无 `AUTO_PUSH`）→ 默认开启
+
+### 采集参数
 
 核心参数位于 `app.js` 顶部的 `CFG`：
 
 ```javascript
-INTERVAL: 5,            // 本地采集间隔（分钟）
+INTERVAL: 5,            // 采集间隔（分钟）
+SERVER_GAP: 800,        // 区间请求间隔（毫秒）
 sampleSize: 5,          // 取前 N 条计算
 weights: [3, 2.5, 2, 1.5, 1],  // 加权权重
-priceMin: 0.1,          // 价格下限
-priceMax: 10.0,         // 价格上限
-```
-
-GitHub Actions 频率在 `.github/workflows/silver-crawler.yml`：
-
-```yaml
-schedule:
-  - cron: '*/30 * * * *'   # 每 30 分钟
+priceMin: 0.1,          // 价格下限（元/万银）
+priceMax: 10.0,         // 价格上限（元/万银）
 ```
 
 ## 🔧 工作原理
-
-```
-GitHub Actions (cron)
-        │
-        ▼
-   node app.js
-   ├── 构造请求体 (serverId)
-   ├── 双重 MD5 签名
-   ├── POST gw.7881.com/api/goods/list × 8
-   ├── 去异常 + 加权均价
-   └── 写入 data/ + history.json + data.js
-        │
-        ▼
-   git commit & push
-        │
-        ▼
-   Pages 自动部署
-   └── index.html 读取 data.js 渲染 ECharts
-```
 
 ### 签名算法
 
@@ -111,8 +172,6 @@ GitHub Actions (cron)
 ```
 lb-sign = MD5( MD5(signKey + timestamp) + requestBody )
 ```
-
-详情见项目内的逆向分析笔记。
 
 ### 接口数据结构
 
@@ -186,23 +245,35 @@ lb-sign: <MD5签名>
 
 ```
 zxsj-silver-price/
-├── app.js                    # 一体化服务（采集 + 存储 + Web）
+├── app.js                    # 一体化服务（采集 + 存储 + API推送 + 可选Web）
 ├── index.html                # ECharts 4 视图前端
 ├── echarts.min.js            # 本地图表库（离线可用）
+├── Dockerfile                # NAS Docker 镜像（含时区 Asia/Shanghai）
+├── entrypoint.sh             # 容器启动脚本
+├── docker-compose.yml        # Compose 部署模板
 ├── data.js                   # 内嵌数据（file:// 可直接打开）
 ├── history.json              # 合并后的完整历史
 ├── data/                     # 按天存储的原始数据
 │   └── silver-price-YYYY-MM-DD.json
 └── .github/workflows/
-    └── silver-crawler.yml    # 定时采集 + 自动提交
+    └── silver-crawler.yml.disabled  # 已禁用（采集迁移到 NAS）
 ```
 
 ## 📈 数据说明
 
 - **单位**：元 / 万银
-- **采集频率**：GitHub 端每 30 分钟，本地默认每 5 分钟
+- **采集频率**：NAS 端每 5 分钟
+- **推送频率**：每轮采集后推送（只推当天 data + history.json + data.js，共 3 文件）
 - **存储**：按区分组，每个采样点含 `avg / high / low / open / close`
 - **体积**：约 45 KB/天，16 MB/年
+
+## 🛡 健壮性设计
+
+- **采集重试**：单区首次失败自动补采 1 次，降低偶发抽风的数据空洞
+- **API 重试**：GitHub API 遇 429（限流）/ 5xx 自动退避重试 2 次
+- **sha 缓存**：上传成功的文件 sha 存内存，下次更新省掉 GET 查询
+- **超时保护**：所有网络请求带超时，不会无限卡死
+- **只推当天**：历史 data 文件不变不推，避免随天数增长触发 GitHub 限流
 
 ## 🛡 免责声明
 
@@ -212,6 +283,6 @@ zxsj-silver-price/
 
 ***
 
-**Made with Node.js · ECharts · GitHub Actions**
+**Made with Node.js · ECharts · Docker · GitHub Pages**
 
 </div>
