@@ -8,6 +8,11 @@ package-lock.json
 # 过程笔记（不部署）
 分析网站POST请求.md
 
+# 采集数据（由 GitHub Actions 维护，避免本地/远程冲突）
+data/
+history.json
+data.js
+
 # 系统文件
 .DS_Store
 Thumbs.db
