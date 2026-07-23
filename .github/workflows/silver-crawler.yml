@@ -1,9 +1,10 @@
 name: Silver Price Crawler
 
 on:
-  schedule:
-    # 每30分钟跑一次 (UTC 时间，北京时间 +8)
-    - cron: '*/30 * * * *'
+  # 定时采集已迁移到极空间 NAS Docker，这里关闭避免与 NAS 并发 push 冲突
+  # 如需恢复，把下面四行取消注释即可
+  # schedule:
+  #   - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:

@@ -190,6 +190,12 @@ function gitPush() {
       const msg = `data: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
       execSync(`git commit -m "${msg}"`, { stdio: 'pipe' });
     } catch { return; }
+    // 推送前先 rebase 远程最新，避免 NAS 与 GitHub Actions 并发写入导致 push 被拒
+    try {
+      execSync('git pull --rebase origin main || git pull --rebase origin master', { stdio: 'pipe' });
+    } catch (e) {
+      console.warn('[gitPush] pull rebase 失败，尝试直接 push:', e.message);
+    }
     execSync('git push', { stdio: 'pipe' });
     console.log(`[${new Date().toLocaleString('zh-CN')}] 数据已推送到 GitHub\n`);
   } catch (e) {
