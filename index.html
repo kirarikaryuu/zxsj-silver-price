@@ -488,14 +488,23 @@ function start(history) {
   renderChart();
 }
 
-if (window.__HISTORY__) {
+// 数据加载策略：
+// - file:// 本地直接打开（双击 index.html）→ 用 data.js 内嵌的 window.__HISTORY__
+// - http/https（Pages、NAS Web）→ fetch history.json 带时间戳防缓存，数据更及时
+// 这样 Pages 上每次都能拿到最新数据，不会被浏览器缓存的 data.js 卡住。
+if (location.protocol === 'file:' && window.__HISTORY__) {
   start(window.__HISTORY__);
 } else {
   fetch('history.json?t=' + Date.now())
     .then(r => r.json())
     .then(start)
     .catch(() => {
-      document.getElementById('chart').innerHTML = '<div class="empty">数据加载失败，请先运行 node app.js</div>';
+      // fetch 失败时（比如纯静态托管没 history.json），降级用 data.js
+      if (window.__HISTORY__) {
+        start(window.__HISTORY__);
+      } else {
+        document.getElementById('chart').innerHTML = '<div class="empty">数据加载失败，请先运行 node app.js</div>';
+      }
     });
 }
 </script>
