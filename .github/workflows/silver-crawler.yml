@@ -1,0 +1,31 @@
+name: Silver Price Crawler
+
+on:
+  schedule:
+    # 每30分钟跑一次 (UTC 时间，北京时间 +8)
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 采集数据
+        env:
+          CI_MODE: '1'
+        run: node app.js
+
+      - name: 提交数据
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ history.json data.js
+          git diff --staged --quiet || git commit -m "data: $(date -u '+%Y-%m-%d %H:%M')"
+          git push
