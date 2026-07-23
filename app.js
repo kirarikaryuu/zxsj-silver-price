@@ -192,13 +192,16 @@ function gitPush() {
     } catch { return; }
     // 推送前先同步远程最新，避免 NAS 与远端并发写入导致 push 被拒
     // 用 fetch + reset 而非 pull，绕开 data/ 被 volume 映射导致的 "unstaged changes" 报错
+    // 所有 git 操作加 30 秒超时，避免容器网络异常时无限卡死
+    const GIT_TIMEOUT = 30;
+    const run = (cmd) => execSync(`timeout ${GIT_TIMEOUT} ${cmd}`, { stdio: 'pipe' });
     try {
-      execSync('git fetch origin', { stdio: 'pipe' });
-      execSync('git reset --soft origin/main 2>/dev/null || git reset --soft origin/master 2>/dev/null', { stdio: 'pipe' });
+      run('git fetch origin');
+      run('git reset --soft origin/main 2>/dev/null || git reset --soft origin/master 2>/dev/null');
     } catch (e) {
       console.warn('[gitPush] 同步远程失败，尝试直接 push:', e.message);
     }
-    execSync('git push', { stdio: 'pipe' });
+    run('git push');
     console.log(`[${new Date().toLocaleString('zh-CN')}] 数据已推送到 GitHub\n`);
   } catch (e) {
     console.error('[gitPush] 推送失败:', e.message);
