@@ -11,7 +11,6 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 // ======================== 配置 ========================
 // 8 个区映射（中文区名 => serverId）
@@ -162,20 +161,29 @@ async function crawlOne(serverName, serverId) {
 // ======================== 采集一轮（8区串行） ========================
 async function crawl() {
   const t = now();
-  console.log(`[${t.toLocaleString('zh-CN')}] 采集开始 (${Object.keys(SERVERS).length}区)`);
-
   const entries = Object.entries(SERVERS);
+  console.log(`[${t.toLocaleString('zh-CN')}] 采集开始 (${entries.length}区)`);
+
+  let okCount = 0, failCount = 0;
   for (let i = 0; i < entries.length; i++) {
     const [serverName, serverId] = entries[i];
-    const rec = await crawlOne(serverName, serverId);
-    if (rec) saveRecord(serverName, serverId, rec);
+    let rec = await crawlOne(serverName, serverId);
+    // 首次失败则重试 1 次（7881 偶发抽风，补一次能显著降低空洞率）
+    if (!rec) {
+      await sleep(1000);
+      console.log(`  [${serverName}] 重试中...`);
+      rec = await crawlOne(serverName, serverId);
+    }
+    if (rec) { saveRecord(serverName, serverId, rec); okCount++; }
+    else { failCount++; }
     if (i < entries.length - 1) await sleep(CFG.SERVER_GAP);
   }
 
   // 首轮校验通过后关闭，避免日志刷屏
   CFG.verifyServerName = false;
 
-  console.log(`[${now().toLocaleString('zh-CN')}] 采集结束\n`);
+  const rate = ((okCount / entries.length) * 100).toFixed(0);
+  console.log(`[${now().toLocaleString('zh-CN')}] 采集结束 成功${okCount}/${entries.length} (${rate}%)\n`);
 
   // NAS 模式：采集后自动 push 数据
   if (process.env.AUTO_PUSH === '1') await gitPush();
@@ -188,6 +196,10 @@ async function crawl() {
 const GH_OWNER = 'kirarikaryuu';
 const GH_REPO = 'zxsj-silver-price';
 const GH_BRANCH = 'main';
+
+// sha 内存缓存：{ repoPath: sha }。上传成功后存入，下次更新直接用，省掉 GET 查询。
+// 进程重启后清空（重启时会 GET 一次补上，无副作用）。
+const shaCache = new Map();
 
 // 读取本地文件 → base64
 function fileB64(filePath) {
@@ -228,43 +240,86 @@ function ghRequest(method, apiPath, bodyObj) {
   });
 }
 
-// 上传单个文件到 GitHub（自动获取已有文件的 sha 用于更新，新文件则创建）
+// 带重试的 GET：429(限流)/5xx(服务端) 时退避重试，最多 2 次
+async function ghGetWithRetry(apiPath) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await ghRequest('GET', apiPath, null);
+    if (r.status === 429 || (r.status >= 500 && r.status < 600)) {
+      if (attempt < 2) {
+        const wait = 2000 * (attempt + 1);  // 2s, 4s
+        console.warn(`  [gh] GET ${apiPath} ${r.status}，${wait}ms 后重试 (${attempt + 1}/2)`);
+        await sleep(wait);
+        continue;
+      }
+    }
+    return r;
+  }
+}
+
+// 上传单个文件到 GitHub
+// 优先用内存里的 sha；没有则 GET 查一次（并缓存）；新文件不传 sha
 async function uploadFile(repoPath, localPath, commitMsg) {
   if (!fs.existsSync(localPath)) return { status: 'skip', path: repoPath };
   const content = fileB64(localPath);
 
-  // 1. 查询文件是否已存在（拿 sha 用于更新；404 表示新文件）
-  const exist = await ghRequest('GET', `${repoPath}?ref=${GH_BRANCH}`, null);
-  let sha = null;
-  if (exist.status === 200 && exist.json && exist.json.sha) sha = exist.json.sha;
+  // 1. 拿 sha（优先内存缓存）
+  let sha = shaCache.get(repoPath) || null;
+  if (!sha) {
+    const exist = await ghGetWithRetry(`${repoPath}?ref=${GH_BRANCH}`);
+    if (exist && exist.status === 200 && exist.json && exist.json.sha) {
+      sha = exist.json.sha;
+      shaCache.set(repoPath, sha);
+    }
+  }
 
-  // 2. 上传/更新
-  const resp = await ghRequest('PUT', repoPath, {
-    message: commitMsg,
-    content,
-    branch: GH_BRANCH,
-    ...(sha ? { sha } : {}),
-  });
-  return { status: resp.status, path: repoPath, sha: !!sha };
+  // 2. 上传/更新（带重试：429/5xx 退避）
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const resp = await ghRequest('PUT', repoPath, {
+      message: commitMsg,
+      content,
+      branch: GH_BRANCH,
+      ...(sha ? { sha } : {}),
+    });
+    // 成功：缓存新 sha
+    if (resp.status === 200 || resp.status === 201) {
+      if (resp.json && resp.json.content && resp.json.content.sha) {
+        shaCache.set(repoPath, resp.json.content.sha);
+      }
+      return { status: resp.status, path: repoPath };
+    }
+    // 限流/服务端错误：退避重试
+    if (resp.status === 429 || (resp.status >= 500 && resp.status < 600)) {
+      if (attempt < 2) {
+        const wait = 2000 * (attempt + 1);
+        console.warn(`  [gh] PUT ${repoPath} ${resp.status}，${wait}ms 后重试 (${attempt + 1}/2)`);
+        await sleep(wait);
+        continue;
+      }
+    }
+    // sha 过期(409/422)：清缓存，下次重新查
+    if (resp.status === 409 || resp.status === 422) {
+      shaCache.delete(repoPath);
+    }
+    return { status: resp.status, path: repoPath, msg: resp.json?.message || resp.error || '' };
+  }
+  return { status: 'retry-exhausted', path: repoPath };
 }
 
-// 收集 data/ 下所有按天 json 文件
-function listDataFiles() {
-  if (!fs.existsSync(DATA_DIR)) return [];
-  return fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json')).sort();
-}
-
-// 推送所有数据文件（history.json + data.js + data/*.json）
+// 推送数据文件
+// 关键优化：只推「当天」的 data 文件 + history.json + data.js（共 3 个）。
+// 历史日期的 data 文件不会变，重复推会让请求数随天数线性增长（1年后365个文件/轮，
+// 每小时 4400+ 请求逼近 GitHub 限流）。
 async function gitPush() {
   if (!process.env.GIT_TOKEN) {
     console.warn('[gitPush] 未设置 GIT_TOKEN，跳过推送');
     return;
   }
   const commitMsg = `data: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
+  const todayFile = `silver-price-${new Date().toISOString().slice(0, 10)}.json`;
   const tasks = [
     ['history.json', HISTORY_FILE],
     ['data.js', path.join(__dirname, 'data.js')],
-    ...listDataFiles().map(f => [`data/${f}`, path.join(DATA_DIR, f)]),
+    [`data/${todayFile}`, path.join(DATA_DIR, todayFile)],
   ];
 
   let ok = 0, fail = 0;
@@ -274,7 +329,7 @@ async function gitPush() {
     else if (r.status === 'skip') { /* 本地不存在，跳过 */ }
     else {
       fail++;
-      console.warn(`  [push] ${repoPath} 失败 status=${r.status} ${r.json?.message || r.error || ''}`);
+      console.warn(`  [push] ${repoPath} 失败 status=${r.status} ${r.msg || ''}`);
     }
   }
   if (fail === 0) {
@@ -336,31 +391,20 @@ function mergeHistory() {
 }
 
 // ======================== Web 服务器 ========================
+// 通过 WEB_SERVER 环境变量控制是否启动。
+// 默认：AUTO_PUSH=1（NAS 模式）时不启动 Web（纯采集器，省资源、避免端口冲突）。
+// 显式 WEB_SERVER=1 强制启动；本地开发(无 AUTO_PUSH)默认启动。
 const MIME = { '.html': 'text/html;charset=utf-8', '.js': 'application/javascript', '.json': 'application/json;charset=utf-8', '.css': 'text/css' };
 
-const server = http.createServer((req, res) => {
-  let p = req.url.split('?')[0];
-  if (p === '/') p = '/index.html';
-  const fp = path.join(__dirname, p);
-  if (!fs.existsSync(fp)) { res.writeHead(404); res.end('404'); return; }
-  res.writeHead(200, { 'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream' });
-  fs.createReadStream(fp).pipe(res);
-});
-
-// ======================== 启动 ========================
-async function start() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  console.log('=== 7881 银价监控服务（8区）===');
-
-  await crawl();
-
-  if (process.env.CI_MODE === '1') {
-    console.log('CI 模式，采集完成，退出。');
-    return;
-  }
-
-  setInterval(() => crawl(), CFG.INTERVAL * 60 * 1000);
-  console.log(`定时采集: 每 ${CFG.INTERVAL} 分钟一次`);
+function startWebServer() {
+  const server = http.createServer((req, res) => {
+    let p = req.url.split('?')[0];
+    if (p === '/') p = '/index.html';
+    const fp = path.join(__dirname, p);
+    if (!fs.existsSync(fp)) { res.writeHead(404); res.end('404'); return; }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream' });
+    fs.createReadStream(fp).pipe(res);
+  });
 
   let port = CFG.PORT;
   server.on('error', (e) => {
@@ -374,6 +418,37 @@ async function start() {
     console.log(`\n图表页面: http://localhost:${port}/`);
     console.log(`按 Ctrl+C 停止\n`);
   });
+}
+
+// ======================== 启动 ========================
+async function start() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  console.log('=== 7881 银价监控服务（8区）===');
+
+  // 是否启动 Web 服务
+  // - WEB_SERVER=1 → 强制启动
+  // - AUTO_PUSH=1 且未显式设 WEB_SERVER → 不启动（NAS 纯采集模式）
+  // - 其它（本地开发）→ 启动
+  const autoPush = process.env.AUTO_PUSH === '1';
+  const webExplicit = process.env.WEB_SERVER !== undefined;  // 显式设过
+  const enableWeb = webExplicit ? (process.env.WEB_SERVER === '1') : !autoPush;
+
+  await crawl();
+
+  if (process.env.CI_MODE === '1') {
+    console.log('CI 模式，采集完成，退出。');
+    return;
+  }
+
+  setInterval(() => crawl(), CFG.INTERVAL * 60 * 1000);
+  console.log(`定时采集: 每 ${CFG.INTERVAL} 分钟一次`);
+
+  if (enableWeb) {
+    startWebServer();
+  } else {
+    console.log('Web 服务未启动（NAS 纯采集模式，通过 GitHub Pages 查看数据）');
+    console.log('如需启用 Web，设置环境变量 WEB_SERVER=1\n');
+  }
 }
 
 start();
