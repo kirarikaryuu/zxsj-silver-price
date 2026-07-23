@@ -181,30 +181,106 @@ async function crawl() {
   if (process.env.AUTO_PUSH === '1') await gitPush();
 }
 
-// ======================== Git 自动推送 ========================
-function gitPush() {
-  try {
-    execSync('git add -f data/ history.json data.js', { stdio: 'pipe' });
-    // 没变化时 commit 会失败（nothing to commit），跳过即可
-    try {
-      const msg = `data: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
-      execSync(`git commit -m "${msg}"`, { stdio: 'pipe' });
-    } catch { return; }
-    // 推送前先同步远程最新，避免 NAS 与远端并发写入导致 push 被拒
-    // 用 fetch + reset 而非 pull，绕开 data/ 被 volume 映射导致的 "unstaged changes" 报错
-    // 所有 git 操作加 30 秒超时，避免容器网络异常时无限卡死
-    const GIT_TIMEOUT = 30;
-    const run = (cmd) => execSync(`timeout ${GIT_TIMEOUT} ${cmd}`, { stdio: 'pipe' });
-    try {
-      run('git fetch origin');
-      run('git reset --soft origin/main 2>/dev/null || git reset --soft origin/master 2>/dev/null');
-    } catch (e) {
-      console.warn('[gitPush] 同步远程失败，尝试直接 push:', e.message);
+// ======================== GitHub API 推送 ========================
+// 早期版本用 git push，但容器内访问 github.com 极不稳定（git 子进程会卡死堆积）。
+// 改用 GitHub Contents REST API 直接上传文件：每个文件一次 HTTPS 请求，
+// 要么成功要么快速失败，不会产生卡死的子进程。
+const GH_OWNER = 'kirarikaryuu';
+const GH_REPO = 'zxsj-silver-price';
+const GH_BRANCH = 'main';
+
+// 读取本地文件 → base64
+function fileB64(filePath) {
+  const buf = fs.readFileSync(filePath);
+  return buf.toString('base64');
+}
+
+// 单次 HTTPS 请求（带超时，避免卡死）
+function ghRequest(method, apiPath, bodyObj) {
+  return new Promise((resolve) => {
+    const bodyStr = bodyObj ? JSON.stringify(bodyObj) : '';
+    const req = https.request({
+      hostname: 'api.github.com',
+      path: `/repos/${GH_OWNER}/${GH_REPO}/contents/${apiPath}`,
+      method,
+      headers: {
+        'Authorization': `Bearer ${process.env.GIT_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(bodyStr),
+        'User-Agent': 'nas-silver-crawler',
+      },
+      timeout: 20000,  // 20 秒超时
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(data); } catch {}
+        resolve({ status: res.statusCode, json });
+      });
+    });
+    req.on('error', (e) => resolve({ status: 0, error: e.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0, error: 'timeout' }); });
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
+
+// 上传单个文件到 GitHub（自动获取已有文件的 sha 用于更新，新文件则创建）
+async function uploadFile(repoPath, localPath, commitMsg) {
+  if (!fs.existsSync(localPath)) return { status: 'skip', path: repoPath };
+  const content = fileB64(localPath);
+
+  // 1. 查询文件是否已存在（拿 sha 用于更新；404 表示新文件）
+  const exist = await ghRequest('GET', `${repoPath}?ref=${GH_BRANCH}`, null);
+  let sha = null;
+  if (exist.status === 200 && exist.json && exist.json.sha) sha = exist.json.sha;
+
+  // 2. 上传/更新
+  const resp = await ghRequest('PUT', repoPath, {
+    message: commitMsg,
+    content,
+    branch: GH_BRANCH,
+    ...(sha ? { sha } : {}),
+  });
+  return { status: resp.status, path: repoPath, sha: !!sha };
+}
+
+// 收集 data/ 下所有按天 json 文件
+function listDataFiles() {
+  if (!fs.existsSync(DATA_DIR)) return [];
+  return fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json')).sort();
+}
+
+// 推送所有数据文件（history.json + data.js + data/*.json）
+async function gitPush() {
+  if (!process.env.GIT_TOKEN) {
+    console.warn('[gitPush] 未设置 GIT_TOKEN，跳过推送');
+    return;
+  }
+  const commitMsg = `data: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
+  const tasks = [
+    ['history.json', HISTORY_FILE],
+    ['data.js', path.join(__dirname, 'data.js')],
+    ...listDataFiles().map(f => [`data/${f}`, path.join(DATA_DIR, f)]),
+  ];
+
+  let ok = 0, fail = 0;
+  for (const [repoPath, localPath] of tasks) {
+    const r = await uploadFile(repoPath, localPath, commitMsg);
+    if (r.status === 200 || r.status === 201) ok++;
+    else if (r.status === 'skip') { /* 本地不存在，跳过 */ }
+    else {
+      fail++;
+      console.warn(`  [push] ${repoPath} 失败 status=${r.status} ${r.json?.message || r.error || ''}`);
     }
-    run('git push');
-    console.log(`[${new Date().toLocaleString('zh-CN')}] 数据已推送到 GitHub\n`);
-  } catch (e) {
-    console.error('[gitPush] 推送失败:', e.message);
+  }
+  if (fail === 0) {
+    console.log(`[${new Date().toLocaleString('zh-CN')}] 数据已推送到 GitHub (${ok} 文件)\n`);
+  } else {
+    console.warn(`[${new Date().toLocaleString('zh-CN')}] 推送完成: 成功 ${ok} / 失败 ${fail}\n`);
   }
 }
 
