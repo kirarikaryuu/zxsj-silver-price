@@ -136,7 +136,6 @@
         <span>数据源<b>7881.com</b></span>
         <span>单位<b>元 / 万银</b></span>
         <span>更新<b id="updateTime">--</b></span>
-        <span>采样<b id="totalSamples">--</b></span>
       </div>
     </header>
 
@@ -156,7 +155,7 @@
     <div class="chart-wrap"><div id="chart"></div></div>
 
     <footer class="footer">
-      <span>每 5 分钟采集 · 去异常挂单加权均价</span>
+      <span></span>
       <span id="footUpdate">--</span>
     </footer>
   </div>
@@ -245,24 +244,33 @@ function renderChart() {
   window.addEventListener('resize', () => chart && chart.resize());
 }
 
-// 汇总历史：8区每日均价折线
+// 汇总历史：8区每日均价折线（用 category 轴，完全控制日期显示）
 function renderSummaryHistory() {
   const names = Object.keys(HISTORY.servers);
-  const series = names.map((name, idx) => {
-    const dayMap = {};
+  // 收集所有出现过的日期作为共享 X 轴
+  const dateSet = new Set();
+  const dayAvg = {};  // {区名: {日期: 均价}}
+  for (const name of names) {
+    dayAvg[name] = {};
+    const m = {};
     for (const s of (HISTORY.servers[name].data || [])) {
       const d = dayStr(s.ts);
-      if (!dayMap[d]) dayMap[d] = [];
-      dayMap[d].push(s.avg);
+      if (!m[d]) m[d] = [];
+      m[d].push(s.avg);
     }
-    const dates = Object.keys(dayMap).sort();
-    return {
-      name, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 5, showSymbol: dates.length < 30,
-      data: dates.map(d => [new Date(d).getTime(), dayMap[d].reduce((a, b) => a + b, 0) / dayMap[d].length]),
-      lineStyle: { width: 1.8 }, emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
-    };
-  });
-  applyCommon({ series, legend: names, xType: 'time', xLabelFormat: '{yyyy}-{MM}-{dd}' });
+    for (const d of Object.keys(m)) {
+      dateSet.add(d);
+      dayAvg[name][d] = m[d].reduce((a, b) => a + b, 0) / m[d].length;
+    }
+  }
+  const dates = [...dateSet].sort();
+  const series = names.map(name => ({
+    name, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 5, showSymbol: dates.length < 30,
+    data: dates.map(d => dayAvg[name][d] ?? null),
+    connectNulls: true,
+    lineStyle: { width: 1.8 }, emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
+  }));
+  applyCommon({ series, legend: names, xType: 'category', xData: dates });
 }
 
 // 汇总单日：8区当天所有采样点折线
@@ -337,6 +345,18 @@ function applyCommon({ series, legend, xType, xData, xLabelFormat, candle }) {
         `开盘 <b>${p.value[1].toFixed(4)}</b> · 收盘 <b>${p.value[2].toFixed(4)}</b><br/>` +
         `最低 <b>${p.value[3].toFixed(4)}</b> · 最高 <b>${p.value[4].toFixed(4)}</b>`;
     };
+  } else if (xType === 'time') {
+    // time 轴折线：自定义 tooltip，header 只显示日期
+    tooltip.formatter = params => {
+      if (!params.length) return '';
+      const d = new Date(params[0].value[0]);
+      const p = n => String(n).padStart(2, '0');
+      const header = `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+      const lines = params.map(item =>
+        `${item.marker} ${item.seriesName}: <b>${Number(item.value[1]).toFixed(4)}</b> 元/万银`
+      );
+      return header + '<br/>' + lines.join('<br/>');
+    };
   } else {
     tooltip.valueFormatter = v => v != null ? Number(v).toFixed(4) + ' 元/万银' : '--';
   }
@@ -351,7 +371,11 @@ function applyCommon({ series, legend, xType, xData, xLabelFormat, candle }) {
       type: xType,
       ...(xData ? { data: xData } : {}),
       axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
-      axisLabel: { color: '#7d8590', fontSize: 11, hideOverlap: true, ...(xLabelFormat ? { formatter: xLabelFormat } : {}) },
+      axisLabel: { color: '#7d8590', fontSize: 11, hideOverlap: true, ...(xLabelFormat ? { formatter: (v) => {
+        const d = new Date(v);
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+      } } : {}) },
       splitLine: { show: false },
     },
     yAxis: {
@@ -415,7 +439,6 @@ function start(history) {
 
   document.getElementById('updateTime').textContent = fmtTime(history.lastUpdate);
   document.getElementById('footUpdate').textContent = '最后更新 · ' + fmtTime(history.lastUpdate);
-  document.getElementById('totalSamples').textContent = (history.totalSamples || 0) + ' 点';
 
   bindControls();
   renderStats();
