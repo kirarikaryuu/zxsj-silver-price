@@ -190,11 +190,13 @@ function gitPush() {
       const msg = `data: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
       execSync(`git commit -m "${msg}"`, { stdio: 'pipe' });
     } catch { return; }
-    // 推送前先 rebase 远程最新，避免 NAS 与 GitHub Actions 并发写入导致 push 被拒
+    // 推送前先同步远程最新，避免 NAS 与远端并发写入导致 push 被拒
+    // 用 fetch + reset 而非 pull，绕开 data/ 被 volume 映射导致的 "unstaged changes" 报错
     try {
-      execSync('git pull --rebase origin main || git pull --rebase origin master', { stdio: 'pipe' });
+      execSync('git fetch origin', { stdio: 'pipe' });
+      execSync('git reset --soft origin/main 2>/dev/null || git reset --soft origin/master 2>/dev/null', { stdio: 'pipe' });
     } catch (e) {
-      console.warn('[gitPush] pull rebase 失败，尝试直接 push:', e.message);
+      console.warn('[gitPush] 同步远程失败，尝试直接 push:', e.message);
     }
     execSync('git push', { stdio: 'pipe' });
     console.log(`[${new Date().toLocaleString('zh-CN')}] 数据已推送到 GitHub\n`);
