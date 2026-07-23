@@ -48,12 +48,21 @@ const CFG = {
 
 const DATA_DIR = path.join(__dirname, 'data');
 const HISTORY_FILE = path.join(__dirname, 'history.json');
-const DAY_FILE = () => path.join(DATA_DIR, `silver-price-${new Date().toISOString().slice(0, 10)}.json`);
+const DAY_FILE = () => path.join(DATA_DIR, `silver-price-${bjDate(new Date())}.json`);
 
 // ======================== 工具 ========================
 function md5(s) { return crypto.createHash('md5').update(s).digest('hex'); }
 function now() { return new Date(); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// 北京时间(Asia/Shanghai)的 YYYY-MM-DD。
+// 注意：不能用 toISOString()（它是 UTC），否则凌晨0~8点的数据会被算到前一天，
+// 导致 24号数据存进 23号文件、网页没有24号图像。
+function bjDate(d) {
+  const s = (d instanceof Date ? d : new Date(d))
+    .toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(0, 10); // sv-SE 格式 = YYYY-MM-DD HH:mm:ss
+  return s;
+}
 
 function buildHeaders(bodyObj) {
   const ts = Date.now();
@@ -320,7 +329,7 @@ async function gitPush() {
     return;
   }
   const commitMsg = `data: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`;
-  const todayFile = `silver-price-${new Date().toISOString().slice(0, 10)}.json`;
+  const todayFile = `silver-price-${bjDate(new Date())}.json`;
   const tasks = [
     ['history.json', HISTORY_FILE],
     ['data.js', path.join(__dirname, 'data.js')],
@@ -349,7 +358,7 @@ function saveRecord(serverName, serverId, rec) {
 
   // 按天存（按区分组）
   const dayPath = DAY_FILE();
-  let day = { date: new Date().toISOString().slice(0, 10), servers: {} };
+  let day = { date: bjDate(new Date()), servers: {} };
   if (fs.existsSync(dayPath)) day = JSON.parse(fs.readFileSync(dayPath, 'utf-8'));
   if (!day.servers) day.servers = {};
   if (!day.servers[serverName]) day.servers[serverName] = { serverId, samples: [] };
@@ -375,7 +384,7 @@ function mergeHistory() {
         servers[sname].data.push({
           ts: s.ts,
           time: new Date(s.ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }),
-          date: new Date(s.ts).toISOString().slice(0, 10),
+          date: bjDate(s.ts),
           avg: s.avg, open: s.open, close: s.close, high: s.high, low: s.low,
           sampleCount: s.sampleCount,
         });
