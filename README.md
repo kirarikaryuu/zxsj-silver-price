@@ -158,12 +158,15 @@ https://<你的GitHub用户名>.github.io/zxsj-silver-price/
 
 ## 🌐 部署到 Netlify（公网兜底站）
 
-GitHub Pages 已经能用，为啥还要 Netlify？—— **NAS 万一挂了，多一个公网兜底站**。Netlify 定时拉仓库构建，数据最多滞后几小时，NAS 断了访客也不至于看到陈旧数据。
+GitHub Pages 已经能用，为啥还要 Netlify？—— **NAS 万一挂了，多一个公网兜底站**。GitHub Actions 定时把最新仓库（含数据）部署到 Netlify，数据最多滞后几小时，NAS 断了访客也不至于看到陈旧数据。
 
-### 为什么不让 Netlify 自动部署？
+### 为什么不用 Netlify 自带的自动部署？
 
-NAS 每 5 分钟 push 一次 → 一天 288 次 push → 触发 288 次 Netlify 构建，远超免费额度（300 构建分钟/月）。
-**所以关掉自动构建，改用 Deploy Hook + GitHub Actions 定时触发，一天只部署几次。**
+两条路都有坑：
+- **让 Netlify 自动构建**：NAS 每 5 分钟 push 一次 → 一天 288 次 push → 触发 288 次 Netlify 构建，远超免费额度（300 构建分钟/月）。
+- **关掉自动构建用 Deploy Hook**：Netlify 的 "Stop builds" 会把 Build Hook **一起废掉**，hook 不再触发构建。
+
+**最终方案**：用 GitHub Actions 定时 checkout 最新代码 + `netlify deploy --prod` CLI 直推。Netlify 那边 0 构建消耗，完全绕开额度问题。
 
 ### 1. Netlify 建站
 
@@ -173,29 +176,24 @@ NAS 每 5 分钟 push 一次 → 一天 288 次 push → 触发 288 次 Netlify 
    - **Publish directory**：`.`（根目录就是站点）
 3. Deploy 一次确认能访问，拿到形如 `https://xxx.netlify.app` 的域名
 
-### 2. 关闭自动部署
+### 2. 拿到 Site ID
 
-Site settings → Build & deploy → Continuous deployment：
-- **Build on push**：关闭（避免 NAS 每次 push 都触发构建）
-- **Deploy Previews**：关闭（省构建次数）
+Site settings → General → Site details → **Site ID**（Project ID，UUID 格式，形如 `a1b2c3d4-...`）
 
-### 3. 创建 Deploy Hook
+### 3. 生成 Netlify Token
 
-同一页 → "Add deploy hook"：
-- Hook name：`gh-actions`
-- Branch：`main`
+https://app.netlify.com/user/applications#personal-access-tokens → New access token → 复制（`nfp_` 开头）
 
-拿到 URL：`https://api.netlify.com/build_hooks/xxxxxxxx`
+### 4. 配置 GitHub Secrets
 
-### 4. 配置 GitHub Secret
-
-仓库 Settings → Secrets and variables → Actions → New repository secret：
-- **Name**：`NETLIFY_HOOK`
-- **Value**：上一步的 hook URL
+仓库 Settings → Secrets and variables → Actions → New repository secret，加两个：
+- **`NETLIFY_SITE_ID`**：第 2 步的 Site ID
+- **`NETLIFY_AUTH_TOKEN`**：第 3 步的 token
 
 ### 5. 定时部署已就绪
 
-`.github/workflows/netlify-deploy.yml` 已配置：北京时间每天 **8/12/16/20/24 点** 各触发一次（一天 5 次，数据最多滞后 4 小时）。
+`.github/workflows/netlify-deploy.yml` 已配置：北京时间每天 **8/12/16/20/24 点** 各部署一次（一天 5 次，数据最多滞后 4 小时）。
+每次只做 checkout + `netlify deploy --prod`，不跑 Netlify 构建，免费额度只占极少量 Actions 分钟数。
 
 > **改频率**：编辑 workflow 里的 `cron`。UTC 时间，北京 = UTC+8。例：
 > - 一天 3 次（早中晚）：`cron: '0 0,6,12 * * *'`（北京 8/14/20）
