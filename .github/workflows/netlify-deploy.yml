@@ -1,0 +1,28 @@
+name: Netlify Deploy
+
+# 触发 Netlify 构建（不做采集、不写文件）。
+# 采集由 NAS Docker 负责（每 5 分钟一次），数据 push 回仓库后，
+# 本 Actions 只是按计划 POST 一个 Deploy Hook，让 Netlify 拉最新仓库构建展示站。
+
+on:
+  schedule:
+    # UTC 时间；北京时间 = UTC+8
+    # 0,4,8,12,16 UTC → 北京 8/12/16/20/24 点，一天 5 次，数据最多滞后 4 小时
+    - cron: '0 0,4,8,12,16 * * *'
+  # 手动触发：Actions 页面 → Run workflow
+  workflow_dispatch:
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 触发 Netlify 构建
+        env:
+          NETLIFY_HOOK: ${{ secrets.NETLIFY_HOOK }}
+        run: |
+          if [ -z "$NETLIFY_HOOK" ]; then
+            echo "::error::未配置 NETLIFY_HOOK secret，请在仓库 Settings → Secrets 添加"
+            exit 1
+          fi
+          echo "POST Netlify deploy hook..."
+          curl -sS -X POST -d '{}' -w "\nHTTP %{http_code}\n" "$NETLIFY_HOOK"
