@@ -156,6 +156,59 @@ docker logs -f zxsj-silver
 https://<你的GitHub用户名>.github.io/zxsj-silver-price/
 ```
 
+## 🌐 部署到 Netlify（公网兜底站）
+
+GitHub Pages 已经能用，为啥还要 Netlify？—— **NAS 万一挂了，多一个公网兜底站**。Netlify 定时拉仓库构建，数据最多滞后几小时，NAS 断了访客也不至于看到陈旧数据。
+
+### 为什么不让 Netlify 自动部署？
+
+NAS 每 5 分钟 push 一次 → 一天 288 次 push → 触发 288 次 Netlify 构建，远超免费额度（300 构建分钟/月）。
+**所以关掉自动构建，改用 Deploy Hook + GitHub Actions 定时触发，一天只部署几次。**
+
+### 1. Netlify 建站
+
+1. [netlify.com](https://app.netlify.com/) → Add new site → Import existing project → 选 GitHub 仓库 `zxsj-silver-price`
+2. 构建配置：
+   - **Build command**：留空（纯静态，无需构建）
+   - **Publish directory**：`.`（根目录就是站点）
+3. Deploy 一次确认能访问，拿到形如 `https://xxx.netlify.app` 的域名
+
+### 2. 关闭自动部署
+
+Site settings → Build & deploy → Continuous deployment：
+- **Build on push**：关闭（避免 NAS 每次 push 都触发构建）
+- **Deploy Previews**：关闭（省构建次数）
+
+### 3. 创建 Deploy Hook
+
+同一页 → "Add deploy hook"：
+- Hook name：`gh-actions`
+- Branch：`main`
+
+拿到 URL：`https://api.netlify.com/build_hooks/xxxxxxxx`
+
+### 4. 配置 GitHub Secret
+
+仓库 Settings → Secrets and variables → Actions → New repository secret：
+- **Name**：`NETLIFY_HOOK`
+- **Value**：上一步的 hook URL
+
+### 5. 定时部署已就绪
+
+`.github/workflows/netlify-deploy.yml` 已配置：北京时间每天 **8/12/16/20/24 点** 各触发一次（一天 5 次，数据最多滞后 4 小时）。
+
+> **改频率**：编辑 workflow 里的 `cron`。UTC 时间，北京 = UTC+8。例：
+> - 一天 3 次（早中晚）：`cron: '0 0,6,12 * * *'`（北京 8/14/20）
+> - 一天 2 次：`cron: '0 0,12 * * *'`（北京 8/20）
+>
+> **手动触发**：Actions 页面 → Netlify Deploy → Run workflow，随时来一发。
+
+### 在线访问
+
+```
+https://<你的Netlify子域名>.netlify.app/
+```
+
 ## 🔧 本地运行（开发/调试）
 
 ```bash
