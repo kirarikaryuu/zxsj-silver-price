@@ -1,8 +1,11 @@
 name: Netlify Deploy
 
-# 触发 Netlify 构建（不做采集、不写文件）。
-# 采集由 NAS Docker 负责（每 5 分钟一次），数据 push 回仓库后，
-# 本 Actions 只是按计划 POST 一个 Deploy Hook，让 Netlify 拉最新仓库构建展示站。
+# 部署展示站到 Netlify（CLI 方式，不用 Netlify 自己构建）。
+# 采集仍由 NAS Docker 负责（每 5 分钟一次 push 数据），本 Actions 只做：
+#   1. checkout 最新代码（含 NAS push 的数据文件）
+#   2. netlify deploy --prod 直接把根目录推上去
+# Netlify 那边 0 构建消耗，完全绕开构建额度问题。
+# 前置：仓库 Secrets 配好 NETLIFY_AUTH_TOKEN 和 NETLIFY_SITE_ID。
 
 on:
   schedule:
@@ -13,16 +16,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  trigger:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 触发 Netlify 构建
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Netlify CLI
+        run: npm install -g netlify-cli
+
+      - name: 部署到 Netlify（生产）
         env:
-          NETLIFY_HOOK: ${{ secrets.NETLIFY_HOOK }}
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        # --dir=. 根目录即站点；--prod 直接发到生产；--message 标记本次部署
         run: |
-          if [ -z "$NETLIFY_HOOK" ]; then
-            echo "::error::未配置 NETLIFY_HOOK secret，请在仓库 Settings → Secrets 添加"
-            exit 1
-          fi
-          echo "POST Netlify deploy hook..."
-          curl -sS -X POST -d '{}' -w "\nHTTP %{http_code}\n" "$NETLIFY_HOOK"
+          netlify deploy \
+            --dir=. \
+            --prod \
+            --message "deploy from GitHub Actions: $(date -u '+%Y-%m-%d %H:%M') UTC"
