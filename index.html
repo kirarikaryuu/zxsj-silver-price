@@ -335,13 +335,28 @@ function renderServerHistory() {
   const dates = Object.keys(dayMap).sort();
   const ohlc = dates.map(d => dayOHLC(dayMap[d]));
 
+  // 同花顺式 K 线：蜡烛紧贴无大缝、从左侧排列、数据少时右侧留白、缩放时等比跟随。
+  // 关键点：
+  // 1) barWidth 用百分比(占当前 band 的比例)，不是固定像素 —— 这样 dataZoom 缩放时
+  //    band 变了，蜡烛宽也等比变，缝隙/蜡烛比例恒定，永远紧贴（固定像素在缩放时缝隙会失控）。
+  // 2) 数据少时(刚上线头几天)补占位空白格到容器能容纳的格数 —— 让蜡烛从左紧排、右侧留白，
+  //    而不是被均分拉满整宽导致又稀又疏。
+  // 调疏密：改 CELL_W（每格像素宽，越小越密）；调粗细：改 barWidth 百分比(越大越粗、缝越小)。
+  const CELL_W = 16;
+  const chartEl = document.getElementById('chart');
+  const axisW = Math.max(0, chartEl.clientWidth - 56 - 24); // 减去 grid 左右边距(56/24)
+  const totalCells = Math.max(ohlc.length, Math.floor(axisW / CELL_W));
+  const paddedDates = dates.concat(Array.from({ length: totalCells - dates.length }, () => ''));
+  const paddedOhlc = ohlc.concat(Array.from({ length: totalCells - ohlc.length }, () => '-'));
+
   applyCommon({
     candle: true,
     series: [{
-      name: curServer, type: 'candlestick', data: ohlc,
+      name: curServer, type: 'candlestick', data: paddedOhlc,
+      barWidth: '88%',   // 占 band 88%，留 ~12% 细缝，缩放时等比跟随、永不离散
       itemStyle: { color: '#f85149', color0: '#2dd4bf', borderColor: '#f85149', borderColor0: '#2dd4bf' },
     }],
-    xType: 'category', xData: dates, legend: [curServer],
+    xType: 'category', xData: paddedDates, legend: [curServer],
   });
 }
 
@@ -372,11 +387,12 @@ function applyCommon({ series, legend, xType, xData, xLabelFormat, candle }) {
     textStyle: { color: '#e6edf3', fontSize: 12 },
   };
   if (candle) {
-    // K线图：自定义 axis tooltip，把 OHLC 翻译成中文
+    // K线图：自定义 axis tooltip，把 OHLC 翻译成中文。
+    // 占位格(右侧留白)的 value 为 '-'，悬停时不弹 tooltip。
     tooltip.formatter = params => {
       const p = params.find(x => x.seriesType === 'candlestick');
-      if (!p) return '';
-      return `${p.seriesName}<br/>` +
+      if (!p || p.value == null || p.value === '-' || p.value[1] == null) return '';
+      return `${p.seriesName} · ${p.axisValueLabel}<br/>` +
         `开盘 <b>${p.value[1].toFixed(4)}</b> · 收盘 <b>${p.value[2].toFixed(4)}</b><br/>` +
         `最低 <b>${p.value[3].toFixed(4)}</b> · 最高 <b>${p.value[4].toFixed(4)}</b>`;
     };
