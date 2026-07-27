@@ -12,6 +12,25 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+// ======================== .env 加载（仅本地开发用） ========================
+// 零依赖手写：读取同目录 .env 注入 process.env（已有同名变量不覆盖）。
+// 设计为对 Docker 完全无影响：容器内没有 .env 文件 → 跳过；
+// 即便有，环境里已注入的变量（如 docker run -e GIT_TOKEN）优先级更高。
+// 本地用法：在项目根建 .env 写 CRAWL=0，即可关闭自动采集、纯 Web 预览。
+try {
+  const envPath = path.join(__dirname, '.env');
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (!m) continue;
+      const [, k, v] = m;
+      if (process.env[k] === undefined) {                 // 不覆盖已存在的环境变量
+        process.env[k] = v.replace(/^["']|["']$/g, '');   // 去掉首尾引号
+      }
+    }
+  }
+} catch (e) { /* .env 读取失败不影响启动，按现有环境变量继续 */ }
+
 // ======================== 配置 ========================
 // 8 个区映射（中文区名 => serverId）
 const SERVERS = {
@@ -447,15 +466,22 @@ async function start() {
   const webExplicit = process.env.WEB_SERVER !== undefined;  // 显式设过
   const enableWeb = webExplicit ? (process.env.WEB_SERVER === '1') : !autoPush;
 
-  await crawl();
+  // 是否采集。默认开启（保持现状，Docker/NAS 无需任何改动）。
+  // CRAWL=0 → 关闭采集与定时器，纯 Web 预览（只读现有 history.json 渲染图表）。
+  // 本地开发调试前端时，在 .env 写 CRAWL=0 即可避免反复打 7881 接口、不污染数据文件。
+  const enableCrawl = process.env.CRAWL !== '0';
 
-  if (process.env.CI_MODE === '1') {
-    console.log('CI 模式，采集完成，退出。');
-    return;
+  if (enableCrawl) {
+    await crawl();
+    if (process.env.CI_MODE === '1') {
+      console.log('CI 模式，采集完成，退出。');
+      return;
+    }
+    setInterval(() => crawl(), CFG.INTERVAL * 60 * 1000);
+    console.log(`定时采集: 每 ${CFG.INTERVAL} 分钟一次`);
+  } else {
+    console.log('采集已关闭（CRAWL=0）：纯 Web 预览模式，只读现有数据，不请求接口、不写数据文件');
   }
-
-  setInterval(() => crawl(), CFG.INTERVAL * 60 * 1000);
-  console.log(`定时采集: 每 ${CFG.INTERVAL} 分钟一次`);
 
   if (enableWeb) {
     startWebServer();

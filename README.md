@@ -227,11 +227,14 @@ node app.js
 | `GIT_TOKEN` | GitHub Personal Access Token（推送用） | - |
 | `WEB_SERVER=1` | 强制启动容器内 Web 服务 | NAS模式关，本地开 |
 | `CI_MODE=1` | 只采集一轮就退出（CI 测试用） | 关 |
+| `CRAWL=0` | **关闭采集与定时器**，纯 Web 预览（只读现有数据，不请求接口、不写数据文件） | 开（采集） |
 
 **Web 服务开关逻辑**：
 - `AUTO_PUSH=1`（NAS 模式）→ 默认**关闭** Web（纯采集器，省资源、避免端口冲突，通过 Pages 看数据）
 - 显式 `WEB_SERVER=1` → 强制开启
 - 本地开发（无 `AUTO_PUSH`）→ 默认开启
+
+> **本地调试前端不想反复采集？** 在项目根建 `.env` 文件（已被 `.gitignore`，不会进仓库），写一行 `CRAWL=0`，再 `node app.js` 即可：只起 Web 预览现有 `history.json`，不打 7881 接口、不污染数据文件。app.js 会零依赖自动读取同目录 `.env`（容器内无此文件则跳过，**对 Docker/NAS 完全无影响**）。改完前端删掉 `.env` 或改回 `CRAWL=1` 即恢复采集。
 
 ### 采集参数
 
