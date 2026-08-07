@@ -337,19 +337,21 @@ zxsj-silver-price/
 ├── Dockerfile                # NAS Docker 镜像（含时区 Asia/Shanghai）
 ├── entrypoint.sh             # 容器启动脚本
 ├── docker-compose.yml        # Compose 部署模板
-├── data.js                   # 内嵌数据（file:// 可直接打开）
-├── history.json              # 合并后的完整历史
-├── data/                     # 按天存储的原始数据
+├── data.js                   # 运行时生成（内嵌数据，file:// 可直接打开）⚠️ 不进 git
+├── history.json              # 运行时生成（合并后的完整历史）⚠️ 不进 git
+├── data/                     # 运行时生成（按天存储的原始数据）⚠️ 不进 git
 │   └── silver-price-YYYY-MM-DD.json
 └── .github/workflows/
     └── silver-crawler.yml.disabled  # 已禁用（采集迁移到 NAS）
 ```
 
+> `data/`、`history.json`、`data.js` 是采集服务运行时生成的，**不纳入 git 跟踪**（见 `.gitignore`）。它们靠 `app.js` 的 Contents API 推送到 GitHub，与 git 通道完全解耦，因此 `clone` 下来的仓库里默认没有这些文件 —— 首次部署后采集服务跑一轮即会生成。
+
 ## 📈 数据说明
 
 - **单位**：元 / 万银
 - **采集频率**：NAS 端每 5 分钟
-- **推送频率**：每轮采集后推送（只推当天 data + history.json + data.js，共 3 文件）
+- **推送频率**：每轮采集后推送（只推当天 data + history.json + data.js，共 3 文件），通过 GitHub Contents API 上传，**不依赖 git 跟踪**（这些文件已从 git 移除，仅靠 API 维护远端副本）
 - **存储**：按区分组，每个采样点含 `avg / high / low / open / close`
 - **体积**：约 45 KB/天，16 MB/年
 
@@ -360,6 +362,9 @@ zxsj-silver-price/
 - **sha 缓存**：上传成功的文件 sha 存内存，下次更新省掉 GET 查询
 - **超时保护**：所有网络请求带超时，不会无限卡死
 - **只推当天**：历史 data 文件不变不推，避免随天数增长触发 GitHub 限流
+- **内存增量维护 history**：启动时全量加载一次 `data/` 到内存，之后每次采集只往内存结构追加一条采样再序列化写盘，**不再每轮全量重读所有历史文件**。早期版本每轮重算导致 CPU 占满、`gitPush` 永远轮不到而远端停更，此改造根治该问题
+- **心跳看门狗自愈**：每轮采集+推送成功后刷新心跳，独立定时器每分钟检查一次；超过 20 分钟无成功采集即判定卡死、主动 `process.exit(1)`，配合 Docker `restart: always` 自动重启恢复，无需人工介入
+- **运行时数据不进 git**：`data/`、`history.json`、`data.js` 均为运行时生成，已从 git 跟踪移除（仅本地存在），数据上 GitHub 纯靠 Contents API 推送，与 git 跟踪解耦 —— 避免 `reset`/`checkout` 误覆盖采集中的数据
 
 ## 🔍 故障排查（FAQ）
 
@@ -379,6 +384,17 @@ zxsj-silver-price/
 ```bash
 docker build -t zxsj-silver . --no-cache   # 强制重建
 docker rm -f zxsj-silver && docker run ...  # 重新启动
+```
+
+### 容器跑着但远端几小时不更新 / CPU 长期 100%
+
+早期版本 `mergeHistory()` 每轮采集会对 `data/` 下所有历史文件全量重读+重排+重写，随天数累积 CPU 占满，导致 `crawl()` 卡死、`gitPush()` 永远轮不到执行，表现就是远端停更、容器 CPU 飙满。
+
+**当前版本已改内存增量维护**（启动加载一次，之后只追加），根治此问题。万一因其它原因再次卡死，内置**心跳看门狗**会在 20 分钟内自动 `exit` 触发 Docker 重启自愈，无需人工干预。也可手动恢复：
+
+```bash
+docker restart zxsj-silver
+docker logs --tail 20 zxsj-silver   # 确认看到 [history] 已加载 + [watchdog] 已启用
 ```
 
 ### 容器内访问不了 GitHub（push 全失败）

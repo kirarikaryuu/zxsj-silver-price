@@ -69,6 +69,19 @@ const DATA_DIR = path.join(__dirname, 'data');
 const HISTORY_FILE = path.join(__dirname, 'history.json');
 const DAY_FILE = () => path.join(DATA_DIR, `silver-price-${bjDate(new Date())}.json`);
 
+// ======================== 历史数据内存缓存 ========================
+// 性能优化：启动时全量加载一次，之后 saveRecord 只做增量 append，
+// 不再每轮全量重读 data/ 下所有文件（旧实现随天数增长 CPU 占满，导致 gitPush 永远轮不到）。
+// 结构与 history.json 一致：{ lastUpdate, totalSamples, servers:{name:{serverId,totalSamples,data:[]}} }
+let historyCache = null;
+
+// ======================== 心跳看门狗 ========================
+// crawl() 成功完成一次（含推送）就刷新 lastCrawlOkTime。
+// 若超过 WATCHDOG_THRESHOLD 仍无成功采集，判定卡死，主动退出 ——
+// 配合 docker restart:always 实现自愈重启，无需人工干预。
+let lastCrawlOkTime = Date.now();
+const WATCHDOG_THRESHOLD = 20 * 60 * 1000;   // 20 分钟（5 分钟一轮，容忍约 4 轮连续失败）
+
 // ======================== 工具 ========================
 function md5(s) { return crypto.createHash('md5').update(s).digest('hex'); }
 function now() { return new Date(); }
@@ -220,6 +233,9 @@ async function crawl() {
 
   // NAS 模式：采集后自动 push 数据
   if (process.env.AUTO_PUSH === '1') await gitPush();
+
+  // 一轮采集+推送完整跑完，刷新看门狗心跳（即使本轮部分区失败也算存活）
+  lastCrawlOkTime = Date.now();
 }
 
 // ======================== GitHub API 推送 ========================
@@ -386,11 +402,13 @@ function saveRecord(serverName, serverId, rec) {
   });
   fs.writeFileSync(dayPath, JSON.stringify(day, null, 2));
 
-  // 合并到 history.json
-  mergeHistory();
+  // 增量合并到内存 historyCache（不再全量重读文件），并落盘 history.json / data.js
+  appendHistory(serverName, serverId, rec);
 }
 
-function mergeHistory() {
+// 启动时全量加载：读 data/ 下所有文件聚合到 historyCache（仅在进程启动时调用一次）。
+// 聚合逻辑与旧 mergeHistory 一致，保证内存与磁盘一致。
+function loadHistoryFromDisk() {
   const files = fs.existsSync(DATA_DIR) ? fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json')).sort() : [];
   const servers = {};
   let total = 0;
@@ -412,15 +430,40 @@ function mergeHistory() {
       }
     }
   }
-  // 每区按时间排序
+  // 每区按时间排序（历史文件可能存在乱序，启动时统一排一次）
   for (const s of Object.values(servers)) s.data.sort((a, b) => a.ts - b.ts);
 
-  const history = {
+  historyCache = {
     lastUpdate: new Date().toISOString(), totalSamples: total, servers,
   };
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
-  // 生成 data.js，供 file:// 协议直接加载
-  fs.writeFileSync(path.join(__dirname, 'data.js'), 'window.__HISTORY__ = ' + JSON.stringify(history) + ';');
+  flushHistory();
+  console.log(`[history] 已加载历史: ${total} 条采样, ${Object.keys(servers).length} 区`);
+}
+
+// 增量追加一条采样到内存 historyCache，并落盘。
+// 关键优化：不重读文件、不重新排序 —— 采样按时间单调追加，data 本身就有序。
+function appendHistory(serverName, serverId, rec) {
+  if (!historyCache) loadHistoryFromDisk();   // 兜底：极端情况下缓存未初始化
+  if (!historyCache.servers[serverName]) {
+    historyCache.servers[serverName] = { serverId, totalSamples: 0, data: [] };
+  }
+  historyCache.servers[serverName].data.push({
+    ts: rec.ts,
+    time: new Date(rec.ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }),
+    date: bjDate(rec.ts),
+    avg: rec.avg, open: rec.open, close: rec.close, high: rec.high, low: rec.low,
+    sampleCount: rec.sampleCount,
+  });
+  historyCache.servers[serverName].totalSamples++;
+  historyCache.totalSamples++;
+  historyCache.lastUpdate = new Date().toISOString();
+  flushHistory();
+}
+
+// 把内存 historyCache 序列化写入 history.json + data.js（单次来源，不重读 data/）
+function flushHistory() {
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify(historyCache, null, 2));
+  fs.writeFileSync(path.join(__dirname, 'data.js'), 'window.__HISTORY__ = ' + JSON.stringify(historyCache) + ';');
 }
 
 // ======================== Web 服务器 ========================
@@ -454,6 +497,19 @@ function startWebServer() {
 }
 
 // ======================== 启动 ========================
+// 心跳看门狗：每分钟检查一次，若距上次成功采集超过阈值则判定卡死，主动退出。
+// 配合 docker restart:always 实现自愈重启。仅常驻采集模式启用。
+function startWatchdog() {
+  setInterval(() => {
+    const idle = Date.now() - lastCrawlOkTime;
+    if (idle > WATCHDOG_THRESHOLD) {
+      console.error(`[watchdog] 已 ${Math.round(idle / 60000)} 分钟无成功采集，判定卡死，退出以触发 docker 重启`);
+      process.exit(1);
+    }
+  }, 60 * 1000).unref();   // unref：不阻止进程正常退出
+  console.log(`[watchdog] 已启用：${WATCHDOG_THRESHOLD / 60000} 分钟无采集将自动重启`);
+}
+
 async function start() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   console.log('=== 7881 银价监控服务（8区）===');
@@ -472,6 +528,8 @@ async function start() {
   const enableCrawl = process.env.CRAWL !== '0';
 
   if (enableCrawl) {
+    // 启动时全量加载历史到内存，之后采集只做增量追加（性能优化）
+    loadHistoryFromDisk();
     await crawl();
     if (process.env.CI_MODE === '1') {
       console.log('CI 模式，采集完成，退出。');
@@ -479,6 +537,7 @@ async function start() {
     }
     setInterval(() => crawl(), CFG.INTERVAL * 60 * 1000);
     console.log(`定时采集: 每 ${CFG.INTERVAL} 分钟一次`);
+    startWatchdog();
   } else {
     console.log('采集已关闭（CRAWL=0）：纯 Web 预览模式，只读现有数据，不请求接口、不写数据文件');
   }
