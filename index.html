@@ -4,7 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>诛仙世界 · 银两价格走势</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='11' fill='%232dd4bf'/%3E%3C/svg%3E" />
   <script src="echarts.min.js"></script>
+  <!-- file:// 本地打开时的兜底数据（http(s) 下会再 fetch 一次带时间戳的 data.js 覆盖它） -->
   <script src="data.js"></script>
   <style>
     :root {
@@ -53,6 +55,14 @@
     }
     .meta span b { color: var(--fg); font-weight: 500; margin-left: 6px; }
 
+    /* 数据格式/加载异常提示条 */
+    .notice {
+      margin-top: 16px; padding: 10px 14px; border-radius: 8px;
+      background: rgba(210,168,255,0.08); border: 1px solid rgba(210,168,255,0.28);
+      color: #d2a8ff; font-size: 12px; letter-spacing: 0.02em; line-height: 1.6;
+    }
+    .notice[hidden] { display: none; }
+
     /* 视图 Tab + 控件行 */
     .controls {
       display: flex; align-items: center; gap: 16px;
@@ -75,9 +85,9 @@
     }
     .date-pick:disabled { opacity: 0.3; cursor: not-allowed; }
 
-    /* 统计卡片 */
+    /* 统计卡片（当前 5 个区 → 5 列，响应式降级） */
     .stats {
-      display: grid; grid-template-columns: repeat(8, 1fr);
+      display: grid; grid-template-columns: repeat(5, 1fr);
       gap: 1px; background: var(--border);
       border-radius: 10px; overflow: hidden; margin-bottom: 20px;
     }
@@ -108,7 +118,7 @@
       font-size: 10px; color: var(--fg-dim); margin-top: 4px;
       font-variant-numeric: tabular-nums; letter-spacing: 0.05em;
     }
-    @media (max-width: 1100px) { .stats { grid-template-columns: repeat(4, 1fr); } }
+    @media (max-width: 1100px) { .stats { grid-template-columns: repeat(3, 1fr); } }
     @media (max-width: 600px) { .stats { grid-template-columns: repeat(2, 1fr); } .wrap { padding: 0 16px; } }
 
     /* 图表 */
@@ -130,7 +140,7 @@
       <div class="brand">
         <span class="dot"></span>
         <h1>诛仙世界 · 银两行情</h1>
-        <span class="sub">8 区服务器 · 实时行情</span>
+        <span class="sub" id="serverCount">5 区服务器 · 实时行情</span>
       </div>
       <div class="meta">
         <span>数据源<b>7881.com</b></span>
@@ -138,6 +148,8 @@
         <span>更新<b id="updateTime">--</b></span>
       </div>
     </header>
+
+    <div class="notice" id="notice" hidden></div>
 
     <div class="controls">
       <div class="tabs" id="tabs">
@@ -155,383 +167,645 @@
     <div class="chart-wrap"><div id="chart"></div></div>
 
     <footer class="footer">
-      <span></span>
+      <span id="footRange"></span>
       <span id="footUpdate">--</span>
     </footer>
   </div>
 
 <script>
-let HISTORY = null;
-let chart = null;
-let curView = 'summary-history';
-let curServer = null;     // 区视图选中的区
-let curDate = null;       // 单日视图选中的日期
+/*
+ * 数据加载策略（v2 契约）：
+ * - data.js（window.__HISTORY__，version=2）是唯一轻量入口：日期并集 + 每区每日 OHLC/avg + 最近一天分时。
+ * - file:// 本地双击打开：用 <script src="data.js"> 内嵌的 window.__HISTORY__。
+ * - http(s)（Pages / NAS）：fetch('data.js?t=...') 取文本（防缓存）→ 剥掉前缀 JSON.parse → 拿最新。
+ * - 单日视图按需解析：若 5 个区的 today.date 都等于所选日期，直接用内嵌 samples（不发请求）；
+ *   否则 fetch('data/silver-price-<date>.json?t=...')，只取 data.js 里存在的区。
+ */
+(function () {
+  'use strict';
 
-const COLORS = ['#2dd4bf','#f85149','#79c0ff','#d2a8ff','#ffa657','#ff7b72','#56d364','#f0883e'];
-const fmt = v => v != null ? v.toFixed(4) : '--';
-// 取数据点所属日期（北京时间）。
-// 注意：不能用 toISOString()（UTC），否则凌晨0~8点数据会被算到前一天，
-// 导致日期选择器/汇总视图分类错乱。优先用后端已算好的 date 字段（Asia/Shanghai）。
-const dayStr = (item) => {
-  if (item && item.date) return item.date;        // history.json 里每条记录带 date 字段
-  // 兜底：用本地时区算（浏览器在东八区时与北京时间一致）
-  const d = new Date(item != null && typeof item === 'number' ? item : (item && item.ts) || Date.now());
-  const p = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
-};
-// ISO 时间 → YYYY-MM-DD HH:mm:ss
-const fmtTime = iso => {
-  if (!iso || iso === '--') return '--';
-  const d = new Date(iso);
-  const p = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-};
+  var VIEWS = ['summary-history', 'summary-day', 'server-history', 'server-day'];
+  var COLORS = ['#2dd4bf', '#f85149', '#79c0ff', '#d2a8ff', '#ffa657'];
+  // 按天归档文件名：采集端固定写 data/silver-price-<date>.json（Lead 已确认，不新增无前缀文件）
+  var DAY_FILE_PREFIX = 'silver-price-';
+  var IS_FILE = location.protocol === 'file:';
+  var FILE_HINT = IS_FILE ? '\n（file:// 模式无法读取按天归档，请用 HTTP 访问）' : '';
+  var DAY_ERR = '该日数据未归档/加载失败' + FILE_HINT;
 
-// 聚合：某区某天所有采样点 → OHLC
-function dayOHLC(samples) {
-  if (!samples.length) return null;
-  const open = samples[0].avg;
-  const close = samples[samples.length - 1].avg;
-  const high = Math.max(...samples.map(s => s.high));
-  const low = Math.min(...samples.map(s => s.low));
-  return [open, close, low, high];
-}
+  var HISTORY = null;
+  var SERVER_NAMES = [];
+  var DAYMAP = {};          // 区名 -> Map(YYYY-MM-DD -> { avg, o, c, h, l, n })
+  var DATES = [];           // 全部区日期并集，升序
+  var chart = null;
+  var curView = 'summary-history';
+  var curServer = null;
+  var curDate = null;
+  var fatalMsg = '';        // 致命错误（数据格式/加载失败）后冻结交互
+  var renderSeq = 0;        // 渲染序号：单日异步加载的竞态保护，只认最后一次
+  var dayCache = new Map(); // 日期 -> { samples } 成功缓存
+  var dayInflight = new Map();
 
-// 获取所有有数据的日期（排序）
-function allDates() {
-  const set = new Set();
-  for (const sname of Object.keys(HISTORY.servers || {})) {
-    for (const s of (HISTORY.servers[sname].data || [])) set.add(dayStr(s));
+  var pad2 = function (n) { return String(n).padStart(2, '0'); };
+  var isNum = function (v) { return typeof v === 'number' && isFinite(v); };
+  var numOrNull = function (v) { return isNum(v) ? v : null; };
+  var fmt = function (v) { return isNum(v) ? v.toFixed(4) : '--'; };
+  var esc = function (s) {
+    return String(s).replace(/[&<>"']/g, function (ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
+  };
+  // ISO 时间 → YYYY-MM-DD HH:mm:ss（本地时区）
+  var fmtTime = function (iso) {
+    if (!iso) return '--';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '--';
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' +
+      pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  };
+  var isDateStr = function (s) { return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s); };
+
+  // ========== 数据加载 ==========
+
+  // data.js 是 "window.__HISTORY__ = {...};" 文本，直接取首尾大括号之间的 JSON
+  function extractHistory(text) {
+    if (!text) throw new Error('data.js 为空');
+    var s = text.indexOf('{');
+    var e = text.lastIndexOf('}');
+    if (s < 0 || e <= s) throw new Error('data.js 格式无法识别');
+    return JSON.parse(text.slice(s, e + 1));
   }
-  return [...set].sort();
-}
 
-// 渲染统计卡片（固定显示最新均价排名）
-function renderStats() {
-  const names = Object.keys(HISTORY.servers || {});
-  const latest = names.map(n => {
-    const arr = HISTORY.servers[n].data || [];
-    return { name: n, value: arr.length ? arr[arr.length - 1].avg : null };
-  }).filter(x => x.value != null).sort((a, b) => b.value - a.value);
-  const maxV = latest[0]?.value, minV = latest[latest.length - 1]?.value;
-
-  const isServerView = curView.startsWith('server');
-  document.getElementById('stats').innerHTML = latest.map((s, i) => {
-    let cls = '';
-    if (s.value === maxV) cls = 'up';
-    else if (s.value === minV) cls = 'down';
-    const clickable = isServerView ? 'clickable' : '';
-    const selected = (isServerView && s.name === curServer) ? 'selected' : '';
-    return `<div class="stat ${clickable} ${selected}" data-server="${s.name}">
-      <div class="name">${s.name}</div>
-      <div class="price ${cls}">${fmt(s.value)}</div>
-      <div class="rank">#${String(i + 1).padStart(2, '0')}</div>
-    </div>`;
-  }).join('');
-
-  if (isServerView) {
-    document.querySelectorAll('.stat.clickable').forEach(el => {
-      el.addEventListener('click', () => {
-        curServer = el.dataset.server;
-        renderStats(); renderChart();
+  function loadData() {
+    if (IS_FILE) {
+      if (window.__HISTORY__) return Promise.resolve(window.__HISTORY__);
+      return Promise.reject(new Error('data.js 未加载'));
+    }
+    // http(s)：带时间戳重新拉取 data.js，避免浏览器缓存旧数据
+    return fetch('data.js?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      })
+      .then(extractHistory)
+      .catch(function (err) {
+        // 拉取失败时退回 <script src="data.js"> 已加载的内容
+        if (window.__HISTORY__) return window.__HISTORY__;
+        throw err;
       });
+  }
+
+  // 建立每日索引：区名 -> Map(日期 -> daily)，并生成全局日期并集
+  function buildIndex() {
+    DAYMAP = {};
+    var union = {};
+    SERVER_NAMES.forEach(function (name) {
+      var srv = (HISTORY.servers && HISTORY.servers[name]) || {};
+      var days = Array.isArray(srv.days) ? srv.days : [];
+      var daily = Array.isArray(srv.daily) ? srv.daily : [];
+      var m = new Map();
+      var len = Math.min(days.length, daily.length);
+      for (var i = 0; i < len; i++) {
+        var d = days[i];
+        if (!isDateStr(d)) continue;
+        m.set(d, daily[i] || {});
+        union[d] = true;
+      }
+      DAYMAP[name] = m;
+    });
+
+    var declared = (Array.isArray(HISTORY.dates) ? HISTORY.dates : []).filter(isDateStr);
+    var all = {};
+    var k;
+    for (k = 0; k < declared.length; k++) all[declared[k]] = true;
+    for (k in union) if (Object.prototype.hasOwnProperty.call(union, k)) all[k] = true;
+    DATES = Object.keys(all).sort();
+  }
+
+  // ========== 单日数据解析（快路径 / 按需 fetch / 竞态保护） ==========
+
+  // 快路径：5 个区的 today.date 都等于该日 → 直接用内嵌 today.samples
+  function fastPathSamples(date) {
+    var out = {};
+    for (var i = 0; i < SERVER_NAMES.length; i++) {
+      var name = SERVER_NAMES[i];
+      var srv = HISTORY.servers[name] || {};
+      var today = srv.today || {};
+      if (!today || today.date !== date || !Array.isArray(today.samples)) return null;
+      out[name] = today.samples;
+    }
+    return SERVER_NAMES.length ? out : null;
+  }
+
+  function fetchDayFile(date) {
+    var url = 'data/' + DAY_FILE_PREFIX + date + '.json?t=' + Date.now();
+    return fetch(url, { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
     });
   }
-}
 
-// ========== 4 种视图渲染 ==========
-function renderChart() {
-  if (chart) { chart.dispose(); chart = null; }
-  if (!HISTORY || !HISTORY.servers) return;
-  chart = echarts.init(document.getElementById('chart'));
+  // 解析某天的分时数据 → { samples: {区名: samples[]} } 或 { error: 文案 }
+  function resolveDay(date) {
+    if (!date) return Promise.resolve({ error: '未选择日期' });
 
-  if (curView === 'summary-history') renderSummaryHistory();
-  else if (curView === 'summary-day') renderSummaryDay();
-  else if (curView === 'server-history') renderServerHistory();
-  else if (curView === 'server-day') renderServerDay();
+    var fast = fastPathSamples(date);
+    if (fast) return Promise.resolve({ samples: fast });
 
-  window.addEventListener('resize', () => chart && chart.resize());
-}
+    if (dayCache.has(date)) return Promise.resolve(dayCache.get(date));
+    if (dayInflight.has(date)) return dayInflight.get(date);
 
-// 汇总历史：8区每日均价折线（用 category 轴，完全控制日期显示）
-function renderSummaryHistory() {
-  const names = Object.keys(HISTORY.servers);
-  // 收集所有出现过的日期作为共享 X 轴
-  const dateSet = new Set();
-  const dayAvg = {};  // {区名: {日期: 均价}}
-  for (const name of names) {
-    dayAvg[name] = {};
-    const m = {};
-    for (const s of (HISTORY.servers[name].data || [])) {
-      const d = dayStr(s);
-      if (!m[d]) m[d] = [];
-      m[d].push(s.avg);
-    }
-    for (const d of Object.keys(m)) {
-      dateSet.add(d);
-      dayAvg[name][d] = m[d].reduce((a, b) => a + b, 0) / m[d].length;
-    }
-  }
-  const dates = [...dateSet].sort();
-  const series = names.map(name => ({
-    name, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 5, showSymbol: dates.length < 30,
-    data: dates.map(d => dayAvg[name][d] ?? null),
-    connectNulls: true,
-    lineStyle: { width: 1.8 }, emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
-  }));
-  applyCommon({ series, legend: names, xType: 'category', xData: dates });
-}
+    var p = fetchDayFile(date).then(function (json) {
+      var src = (json && json.servers) || {};
+      var samples = {};
+      var any = false;
+      SERVER_NAMES.forEach(function (name) {
+        var srv = src[name];
+        // 历史文件里可能有已合区的旧区：只取 data.js 里存在的区
+        if (srv && Array.isArray(srv.samples) && srv.samples.length) {
+          samples[name] = srv.samples;
+          any = true;
+        }
+      });
+      var res = any ? { samples: samples } : { error: DAY_ERR };
+      if (any) dayCache.set(date, res);
+      return res;
+    }).catch(function () {
+      return { error: DAY_ERR };
+    }).then(function (res) {
+      dayInflight.delete(date);
+      return res;
+    });
 
-// 汇总单日：8区当天所有采样点折线
-// 关键：同一轮采集的8个区时间戳差几秒(串行采集间隔800ms)，
-// 直接用 time 轴会导致8条线错开、tooltip 也凑不齐。
-// 改为按"分钟"分桶对齐 → 8区共享同一X位置 → tooltip 能一次显示全部8区。
-function renderSummaryDay() {
-  const names = Object.keys(HISTORY.servers);
-
-  // 1. 收集当天所有采样点，按"HH:mm"分桶（同一轮8个区落在同一桶）
-  const bucket = {};  // { 'HH:mm': { 区名: 该分钟内最后一个均价 } }
-  const bucketTime = {};  // { 'HH:mm': 该桶代表的时间戳(用于排序) }
-  for (const name of names) {
-    for (const s of (HISTORY.servers[name].data || [])) {
-      if (dayStr(s) !== curDate) continue;
-      const d = new Date(s.ts);
-      const p = n => String(n).padStart(2, '0');
-      const key = `${p(d.getHours())}:${p(d.getMinutes())}`;  // 精确到分钟，秒被抹平
-      if (!bucket[key]) { bucket[key] = {}; bucketTime[key] = s.ts; }
-      bucket[key][name] = s.avg;          // 同一桶同一区取最后一次（覆盖）
-      if (s.ts > bucketTime[key]) bucketTime[key] = s.ts;
-    }
+    dayInflight.set(date, p);
+    return p;
   }
 
-  // 2. 按时间排序得到 X 轴标签
-  const labels = Object.keys(bucket).sort((a, b) => bucketTime[a] - bucketTime[b]);
+  // ========== 通用渲染 ==========
 
-  // 3. 每个区一条线，数据按 label 对齐（缺数据填 null）
-  const series = names.map(name => ({
-    name, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 4, showSymbol: true,
-    data: labels.map(k => bucket[k][name] ?? null),
-    connectNulls: true,
-    lineStyle: { width: 1.8 }, emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
-  }));
-
-  applyCommon({
-    series, legend: names,
-    xType: 'category', xData: labels,
-    // 不传 xLabelFormat：标签 "19:35" 原样显示即可
-  });
-}
-
-// 区历史K：选中区每日1根K线
-function renderServerHistory() {
-  if (!curServer) return;
-  const samples = HISTORY.servers[curServer].data || [];
-  const dayMap = {};
-  for (const s of samples) {
-    const d = dayStr(s);
-    if (!dayMap[d]) dayMap[d] = [];
-    dayMap[d].push(s);
+  function showChartMessage(text) {
+    if (!chart) return;
+    chart.hideLoading();
+    chart.clear();
+    chart.setOption({
+      backgroundColor: 'transparent',
+      xAxis: { show: false },
+      yAxis: { show: false },
+      title: {
+        text: text, left: 'center', top: 'middle',
+        textStyle: { color: '#7d8590', fontSize: 13, lineHeight: 22, align: 'center' },
+      },
+    });
   }
-  const dates = Object.keys(dayMap).sort();
-  const ohlc = dates.map(d => dayOHLC(dayMap[d]));
 
-  // 同花顺式 K 线：蜡烛紧贴无大缝、从左侧排列、数据少时右侧留白、缩放时等比跟随。
-  // 关键点：
-  // 1) barWidth 用百分比(占当前 band 的比例)，不是固定像素 —— 这样 dataZoom 缩放时
-  //    band 变了，蜡烛宽也等比变，缝隙/蜡烛比例恒定，永远紧贴（固定像素在缩放时缝隙会失控）。
-  // 2) 数据少时(刚上线头几天)补占位空白格到容器能容纳的格数 —— 让蜡烛从左紧排、右侧留白，
-  //    而不是被均分拉满整宽导致又稀又疏。
-  // 调疏密：改 CELL_W（每格像素宽，越小越密）；调粗细：改 barWidth 百分比(越大越粗、缝越小)。
-  const CELL_W = 16;
-  const chartEl = document.getElementById('chart');
-  const axisW = Math.max(0, chartEl.clientWidth - 56 - 24); // 减去 grid 左右边距(56/24)
-  const totalCells = Math.max(ohlc.length, Math.floor(axisW / CELL_W));
-  const paddedDates = dates.concat(Array.from({ length: totalCells - dates.length }, () => ''));
-  const paddedOhlc = ohlc.concat(Array.from({ length: totalCells - ohlc.length }, () => '-'));
-
-  applyCommon({
-    candle: true,
-    series: [{
-      name: curServer, type: 'candlestick', data: paddedOhlc,
-      barWidth: '88%',   // 占 band 88%，留 ~12% 细缝，缩放时等比跟随、永不离散
-      itemStyle: { color: '#f85149', color0: '#2dd4bf', borderColor: '#f85149', borderColor0: '#2dd4bf' },
-    }],
-    xType: 'category', xData: paddedDates, legend: [curServer],
-  });
-}
-
-// 区单日：选中区选中日的分时折线
-function renderServerDay() {
-  if (!curServer) return;
-  const samples = (HISTORY.servers[curServer].data || []).filter(s => dayStr(s) === curDate);
-  if (!samples.length) {
-    chart.setOption({ title: { text: '该日无数据', left: 'center', top: 'center', textStyle: { color: '#7d8590', fontSize: 13 } } });
-    return;
+  function showChartLoading() {
+    if (!chart) return;
+    chart.clear();
+    chart.showLoading('default', {
+      text: '加载中…', color: '#2dd4bf', textColor: '#7d8590',
+      maskColor: 'rgba(13,17,23,0)', zlevel: 0, fontSize: 12,
+    });
   }
-  applyCommon({
-    series: [{
-      name: curServer, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 4, showSymbol: true,
-      data: samples.map(s => [s.ts, s.avg]),
-      lineStyle: { width: 1.8 }, emphasis: { focus: 'series' },
-      areaStyle: { color: 'rgba(45,212,191,0.08)' },
-    }],
-    legend: [curServer], xType: 'time',
-  });
-}
 
-// 通用 option 应用
-function applyCommon({ series, legend, xType, xData, xLabelFormat, candle }) {
-  const tooltip = {
-    trigger: 'axis', axisPointer: { type: 'cross', lineStyle: { color: 'rgba(255,255,255,0.15)', type: 'dashed' } },
-    backgroundColor: 'rgba(13,17,23,0.95)', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
-    textStyle: { color: '#e6edf3', fontSize: 12 },
-  };
-  if (candle) {
-    // K线图：自定义 axis tooltip，把 OHLC 翻译成中文。
-    // 占位格(右侧留白)的 value 为 '-'，悬停时不弹 tooltip。
-    tooltip.formatter = params => {
-      const p = params.find(x => x.seriesType === 'candlestick');
-      if (!p || p.value == null || p.value === '-' || p.value[1] == null) return '';
-      return `${p.seriesName} · ${p.axisValueLabel}<br/>` +
-        `开盘 <b>${p.value[1].toFixed(4)}</b> · 收盘 <b>${p.value[2].toFixed(4)}</b><br/>` +
-        `最低 <b>${p.value[3].toFixed(4)}</b> · 最高 <b>${p.value[4].toFixed(4)}</b>`;
+  function applyCommon(opts) {
+    var series = opts.series;
+    var legend = opts.legend;
+    var xType = opts.xType;
+    var xData = opts.xData;
+    var candle = opts.candle;
+    if (!chart) return;
+
+    var tooltip = {
+      trigger: 'axis',
+      axisPointer: { type: 'cross', lineStyle: { color: 'rgba(255,255,255,0.15)', type: 'dashed' } },
+      backgroundColor: 'rgba(13,17,23,0.95)', borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
+      textStyle: { color: '#e6edf3', fontSize: 12 },
     };
-  } else if (xType === 'time') {
-    // time 轴折线：自定义 tooltip，header 只显示日期
-    tooltip.formatter = params => {
-      if (!params.length) return '';
-      const d = new Date(params[0].value[0]);
-      const p = n => String(n).padStart(2, '0');
-      const header = `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
-      const lines = params.map(item =>
-        `${item.marker} ${item.seriesName}: <b>${Number(item.value[1]).toFixed(4)}</b> 元/万银`
-      );
-      return header + '<br/>' + lines.join('<br/>');
-    };
-  } else {
-    // category 轴折线（如汇总单日按分钟对齐）：tooltip 显示该时刻各区价格 + 汇总均价
-    tooltip.formatter = params => {
-      if (!params.length) return '';
-      const header = params[0].axisValueLabel;  // X 轴标签(如 "19:35")
-      const valid = params.filter(p => p.value != null);
-      const lines = valid
-        .sort((a, b) => a.value - b.value)
-        .map(item => `${item.marker} ${item.seriesName}: <b>${Number(item.value).toFixed(4)}</b> 元/万银`);
-      let summary = '';
-      if (valid.length > 1) {
-        const avg = valid.reduce((s, p) => s + p.value, 0) / valid.length;
-        const lo = valid[0], hi = valid[valid.length - 1];
-        summary = `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.08);color:#7d8590;font-size:11px">`
-          + `8区均价 <b style="color:#e6edf3">${avg.toFixed(4)}</b> · 最低 <b style="color:#2dd4bf">${lo.seriesName} ${Number(lo.value).toFixed(4)}</b> · 最高 <b style="color:#f85149">${hi.seriesName} ${Number(hi.value).toFixed(4)}</b>`
-          + `</div>`;
+
+    if (candle) {
+      // K线：自定义 axis tooltip，把 OHLC 翻译成中文；占位格（右侧留白）的 '-' 不弹 tooltip
+      tooltip.formatter = function (params) {
+        var p = null;
+        for (var i = 0; i < params.length; i++) {
+          if (params[i].seriesType === 'candlestick') { p = params[i]; break; }
+        }
+        if (!p) return '';
+        var arr = candleValues(p);
+        if (!arr) return '';
+        var o = arr[0], c = arr[1], l = arr[2], h = arr[3];
+        var date = p.axisValue != null ? p.axisValue : p.axisValueLabel;
+        return date + '<br/>' +
+          '开盘 <b>' + o.toFixed(4) + '</b> · 收盘 <b>' + c.toFixed(4) + '</b><br/>' +
+          '最低 <b>' + l.toFixed(4) + '</b> · 最高 <b>' + h.toFixed(4) + '</b>';
+      };
+    } else if (xType === 'time') {
+      // time 轴折线（区单日）：header 显示日期 + 时刻
+      tooltip.formatter = function (params) {
+        if (!params.length) return '';
+        var d = new Date(params[0].value[0]);
+        var header = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+          ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+        var lines = params.map(function (item) {
+          return item.marker + ' ' + item.seriesName + ': <b>' + Number(item.value[1]).toFixed(4) + '</b> 元/万银';
+        });
+        return header + '<br/>' + lines.join('<br/>');
+      };
+    } else {
+      // category 轴折线（汇总历史 / 汇总单日）：tooltip 显示该时刻各区价格 + 汇总均价/最低/最高
+      tooltip.formatter = function (params) {
+        if (!params.length) return '';
+        var header = params[0].axisValue != null ? params[0].axisValue : params[0].axisValueLabel;
+        var valid = params.filter(function (p) { return p.value != null && isNum(Number(p.value)); });
+        valid.sort(function (a, b) { return Number(a.value) - Number(b.value); });
+        var lines = valid.map(function (item) {
+          return item.marker + ' ' + item.seriesName + ': <b>' + Number(item.value).toFixed(4) + '</b> 元/万银';
+        });
+        var summary = '';
+        if (valid.length > 1) {
+          var sum = 0;
+          valid.forEach(function (p) { sum += Number(p.value); });
+          var avg = sum / valid.length;
+          var lo = valid[0], hi = valid[valid.length - 1];
+          summary = '<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.08);color:#7d8590;font-size:11px">' +
+            SERVER_NAMES.length + '区均价 <b style="color:#e6edf3">' + avg.toFixed(4) + '</b>' +
+            ' · 最低 <b style="color:#2dd4bf">' + lo.seriesName + ' ' + Number(lo.value).toFixed(4) + '</b>' +
+            ' · 最高 <b style="color:#f85149">' + hi.seriesName + ' ' + Number(hi.value).toFixed(4) + '</b>' +
+            '</div>';
+        }
+        return header + '<br/>' + lines.join('<br/>') + summary;
+      };
+    }
+
+    chart.hideLoading();
+    chart.clear();
+    chart.setOption({
+      backgroundColor: 'transparent',
+      color: COLORS,
+      tooltip: tooltip,
+      legend: {
+        data: legend, top: 8, textStyle: { color: '#7d8590', fontSize: 11 },
+        itemWidth: 12, itemHeight: 2, itemGap: 18, inactiveColor: '#484f58',
+      },
+      grid: { left: 56, right: 24, top: 48, bottom: 56 },
+      xAxis: {
+        type: xType,
+        ...(xData ? { data: xData } : {}),
+        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+        axisLabel: { color: '#7d8590', fontSize: 11, hideOverlap: true },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: 'value', scale: true,
+        axisLabel: { color: '#7d8590', fontSize: 11, formatter: function (v) { return v.toFixed(4); } },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+      },
+      dataZoom: [
+        { type: 'inside', start: 0, end: 100 },
+        {
+          type: 'slider', start: 0, end: 100, height: 18, bottom: 16,
+          borderColor: 'transparent', backgroundColor: 'rgba(255,255,255,0.02)',
+          fillerColor: 'rgba(45,212,191,0.08)', handleStyle: { color: '#2dd4bf' },
+          textStyle: { color: '#7d8590', fontSize: 10 },
+        },
+      ],
+      series: series,
+    });
+  }
+
+  // 从 tooltip params 里稳妥取出 [open, close, lowest, highest]
+  // （ECharts 不同版本/写法下 value 可能带 category 序号，data 是原始项）
+  function candleValues(p) {
+    var candidates = [];
+    if (Array.isArray(p.data)) candidates.push(p.data);
+    if (Array.isArray(p.value)) candidates.push(p.value);
+    for (var i = 0; i < candidates.length; i++) {
+      var a = candidates[i];
+      var arr = a.length === 5 ? a.slice(1) : a.slice(0, 4);
+      if (arr.length === 4 && isNum(arr[0]) && isNum(arr[1]) && isNum(arr[2]) && isNum(arr[3])) return arr;
+    }
+    return null;
+  }
+
+  // ========== 统计卡片（5 区，latest.avg） ==========
+
+  function renderStats() {
+    var isServerView = curView.indexOf('server') === 0;
+    var rows = SERVER_NAMES.map(function (name) {
+      var srv = (HISTORY && HISTORY.servers && HISTORY.servers[name]) || {};
+      var latest = srv.latest || {};
+      return { name: name, value: numOrNull(latest.avg) };
+    });
+
+    var sorted = rows.filter(function (r) { return r.value != null; })
+      .sort(function (a, b) { return b.value - a.value; });
+    var maxV = sorted.length ? sorted[0].value : null;
+    var minV = sorted.length ? sorted[sorted.length - 1].value : null;
+    var rankOf = {};
+    sorted.forEach(function (r, i) { rankOf[r.name] = i + 1; });
+
+    var html = rows.map(function (r) {
+      var cls = '';
+      if (r.value != null && r.value === maxV) cls = 'up';
+      else if (r.value != null && r.value === minV) cls = 'down';
+      var clickable = isServerView ? 'clickable' : '';
+      var selected = (isServerView && r.name === curServer) ? 'selected' : '';
+      var rank = rankOf[r.name] ? '#' + pad2(rankOf[r.name]) : '--';
+      return '<div class="stat ' + clickable + ' ' + selected + '" data-server="' + esc(r.name) + '">' +
+        '<div class="name" title="' + esc(r.name) + '">' + esc(r.name) + '</div>' +
+        '<div class="price ' + cls + '">' + fmt(r.value) + '</div>' +
+        '<div class="rank">' + rank + '</div>' +
+        '</div>';
+    }).join('');
+    document.getElementById('stats').innerHTML = html;
+
+    if (isServerView) {
+      var cards = document.querySelectorAll('.stat.clickable');
+      for (var i = 0; i < cards.length; i++) {
+        (function (el) {
+          el.addEventListener('click', function () {
+            curServer = el.getAttribute('data-server');
+            renderStats();
+            renderChart();
+          });
+        })(cards[i]);
       }
-      return header + '<br/>' + lines.join('<br/>') + summary;
-    };
+    }
   }
-  chart.setOption({
-    backgroundColor: 'transparent',
-    color: COLORS,
-    tooltip,
-    legend: { data: legend, top: 8, textStyle: { color: '#7d8590', fontSize: 11 },
-      itemWidth: 12, itemHeight: 2, itemGap: 18, inactiveColor: '#484f58' },
-    grid: { left: 56, right: 24, top: 48, bottom: 56 },
-    xAxis: {
-      type: xType,
-      ...(xData ? { data: xData } : {}),
-      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
-      axisLabel: { color: '#7d8590', fontSize: 11, hideOverlap: true, ...(xLabelFormat ? { formatter: (v) => {
-        const d = new Date(v);
-        const p = n => String(n).padStart(2, '0');
-        return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
-      } } : {}) },
-      splitLine: { show: false },
-    },
-    yAxis: {
-      type: 'value', scale: true,
-      axisLabel: { color: '#7d8590', fontSize: 11, formatter: v => v.toFixed(4) },
-      axisLine: { show: false },
-      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
-    },
-    dataZoom: [
-      { type: 'inside', start: 0, end: 100 },
-      { type: 'slider', start: 0, end: 100, height: 18, bottom: 16,
-        borderColor: 'transparent', backgroundColor: 'rgba(255,255,255,0.02)',
-        fillerColor: 'rgba(45,212,191,0.08)', handleStyle: { color: '#2dd4bf' },
-        textStyle: { color: '#7d8590', fontSize: 10 } },
-    ],
-    series,
-  });
-}
 
-// ========== 交互绑定 ==========
-function bindControls() {
-  // Tab 切换
-  document.querySelectorAll('.tab').forEach(el => {
-    el.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      el.classList.add('active');
-      curView = el.dataset.view;
+  // ========== 4 种视图 ==========
 
-      const needDate = curView.endsWith('day');
-      const isServerView = curView.startsWith('server');
-      document.getElementById('datePick').disabled = !needDate;
+  function renderChart() {
+    var seq = ++renderSeq;
+    if (chart) { chart.dispose(); chart = null; }
+    if (!HISTORY || fatalMsg) return;
+    chart = echarts.init(document.getElementById('chart'));
 
-      // 区视图默认选第一个区
-      if (isServerView && !curServer) {
-        curServer = Object.keys(HISTORY.servers)[0];
+    if (curView === 'summary-history') { renderSummaryHistory(); return; }
+    if (curView === 'server-history') { renderServerHistory(); return; }
+
+    // 单日视图：需要按需解析当日分时数据
+    if (!curDate) { showChartMessage('请选择日期'); return; }
+    showChartLoading();
+    resolveDay(curDate).then(function (res) {
+      if (seq !== renderSeq || !chart) return;  // 竞态保护：快速切日期/视图时丢弃旧结果
+      chart.hideLoading();
+      if (res.error) { showChartMessage(res.error); return; }
+      if (curView === 'summary-day') drawSummaryDay(res.samples);
+      else drawServerDay(res.samples);
+    });
+  }
+
+  // 汇总历史：history.dates 为 X 轴，每区一条每日均价折线（缺日 = null）
+  function renderSummaryHistory() {
+    var dates = DATES;
+    var series = SERVER_NAMES.map(function (name) {
+      var m = DAYMAP[name] || new Map();
+      return {
+        name: name,
+        type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 5,
+        showSymbol: dates.length < 30,
+        data: dates.map(function (d) {
+          var day = m.get(d);
+          return day && day.avg != null ? numOrNull(Number(day.avg)) : null;
+        }),
+        connectNulls: true,
+        lineStyle: { width: 1.8 },
+        emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
+      };
+    });
+    applyCommon({ series: series, legend: SERVER_NAMES, xType: 'category', xData: dates });
+  }
+
+  // 汇总单日：选定日 5 区分时线，按 HH:mm 分桶对齐（沿用旧逻辑）
+  function drawSummaryDay(samplesByServer) {
+    var bucket = {};   // 'HH:mm' -> { 区名: 均价 }
+    var bucketTs = {}; // 'HH:mm' -> 该桶代表时间戳（排序用）
+    SERVER_NAMES.forEach(function (name) {
+      var list = samplesByServer[name] || [];
+      for (var i = 0; i < list.length; i++) {
+        var s = list[i];
+        if (!s || !isNum(Number(s.ts)) || !isNum(Number(s.avg))) continue;
+        var ts = Number(s.ts);
+        var d = new Date(ts);
+        if (isNaN(d.getTime())) continue;
+        var key = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+        if (!bucket[key]) { bucket[key] = {}; bucketTs[key] = ts; }
+        bucket[key][name] = Number(s.avg);
+        if (ts > bucketTs[key]) bucketTs[key] = ts;
       }
-      renderStats();
+    });
+
+    var labels = Object.keys(bucket).sort(function (a, b) { return bucketTs[a] - bucketTs[b]; });
+    if (!labels.length) { showChartMessage('该日无数据'); return; }
+
+    var series = SERVER_NAMES.map(function (name) {
+      return {
+        name: name,
+        type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 4, showSymbol: true,
+        data: labels.map(function (k) { return bucket[k][name] != null ? bucket[k][name] : null; }),
+        connectNulls: true,
+        lineStyle: { width: 1.8 },
+        emphasis: { focus: 'series', lineStyle: { width: 2.6 } },
+      };
+    });
+    applyCommon({ series: series, legend: SERVER_NAMES, xType: 'category', xData: labels });
+  }
+
+  // 区历史K：选定区每日一根蜡烛（daily.o/c/l/h → candles）
+  function renderServerHistory() {
+    if (!curServer) { showChartMessage('暂无区数据'); return; }
+    var m = DAYMAP[curServer] || new Map();
+    var days = Array.from(m.keys()).sort();
+    var candles = days.map(function (d) {
+      var day = m.get(d) || {};
+      var o = numOrNull(Number(day.o));
+      var c = numOrNull(Number(day.c));
+      var l = numOrNull(Number(day.l));
+      var h = numOrNull(Number(day.h));
+      if (o == null || c == null || l == null || h == null) return '-';
+      return [o, c, l, h];  // candlestick: [open, close, lowest, highest]
+    });
+
+    // 同花顺式 K 线：蜡烛紧贴无大缝、从左侧排列、数据少时右侧留白、缩放时等比跟随。
+    // 1) barWidth 用百分比（占当前 band 比例），dataZoom 缩放时蜡烛宽等比变化，缝隙恒定。
+    // 2) 数据少时补占位空白格到容器能容纳的格数 —— 蜡烛从左紧排、右侧留白。
+    // 调疏密：改 CELL_W（每格像素宽，越小越密）；调粗细：改 barWidth 百分比。
+    var CELL_W = 16;
+    var chartEl = document.getElementById('chart');
+    var axisW = Math.max(0, chartEl.clientWidth - 56 - 24); // 减去 grid 左右边距(56/24)
+    var totalCells = Math.max(days.length, Math.floor(axisW / CELL_W));
+    var padCount = Math.max(0, totalCells - days.length);
+    var paddedDates = days.slice();
+    var paddedCandles = candles.slice();
+    for (var i = 0; i < padCount; i++) { paddedDates.push(''); paddedCandles.push('-'); }
+
+    applyCommon({
+      candle: true,
+      series: [{
+        name: curServer, type: 'candlestick', data: paddedCandles,
+        barWidth: '88%',
+        itemStyle: { color: '#f85149', color0: '#2dd4bf', borderColor: '#f85149', borderColor0: '#2dd4bf' },
+      }],
+      xType: 'category', xData: paddedDates, legend: [curServer],
+    });
+  }
+
+  // 区单日：选定区当日分时折线 + 面积
+  function drawServerDay(samplesByServer) {
+    if (!curServer) { showChartMessage('暂无区数据'); return; }
+    var list = (samplesByServer[curServer] || []).slice().sort(function (a, b) {
+      return Number(a.ts) - Number(b.ts);
+    });
+    if (!list.length) { showChartMessage('该日无数据'); return; }
+    applyCommon({
+      series: [{
+        name: curServer, type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 4, showSymbol: true,
+        data: list.map(function (s) { return [Number(s.ts), Number(s.avg)]; }),
+        lineStyle: { width: 1.8 }, emphasis: { focus: 'series' },
+        areaStyle: { color: 'rgba(45,212,191,0.08)' },
+      }],
+      legend: [curServer], xType: 'time',
+    });
+  }
+
+  // ========== hash 路由：#view 或 #view/YYYY-MM-DD ==========
+
+  function parseHash() {
+    var raw = String(location.hash || '').replace(/^#/, '');
+    var seg = raw.split('/');
+    var view = VIEWS.indexOf(seg[0]) >= 0 ? seg[0] : 'summary-history';
+    var date = isDateStr(seg[1]) ? seg[1] : null;
+    return { view: view, date: date };
+  }
+
+  function normalizeDate(date) {
+    if (!isDateStr(date)) return null;
+    if (!DATES.length) return null;
+    if (date < DATES[0] || date > DATES[DATES.length - 1]) return null;
+    return date;
+  }
+
+  function syncHash(push) {
+    var want = '#' + curView + (curView.indexOf('day') >= 0 && curDate ? '/' + curDate : '');
+    if (location.hash === want) return;
+    if (push) {
+      location.hash = want;
+    } else {
+      try { history.replaceState(null, '', want); } catch (e) { /* file:// 等环境忽略 */ }
+    }
+  }
+
+  function applyState(view, date, doRender) {
+    if (fatalMsg) return;
+    curView = VIEWS.indexOf(view) >= 0 ? view : 'summary-history';
+    var dp = document.getElementById('datePick');
+
+    if (curView.indexOf('day') >= 0) {
+      curDate = normalizeDate(date) || DATES[DATES.length - 1];
+      dp.disabled = false;
+      dp.value = curDate;
+    } else {
+      dp.disabled = true;
+    }
+
+    if (curView.indexOf('server') === 0 && (!curServer || SERVER_NAMES.indexOf(curServer) < 0)) {
+      curServer = SERVER_NAMES[0];
+    }
+
+    var tabs = document.querySelectorAll('.tab');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle('active', tabs[i].getAttribute('data-view') === curView);
+    }
+
+    if (doRender) { renderStats(); renderChart(); }
+  }
+
+  function onHashChange() {
+    var st = parseHash();
+    if (st.view === curView) {
+      if (st.view.indexOf('day') < 0) return;
+      if (!st.date) { syncHash(false); return; }   // 只写了视图名：补全当前日期，不重渲染
+      if (normalizeDate(st.date) === curDate) return;
+    }
+    applyState(st.view, st.date, true);
+    syncHash(false);
+  }
+
+  // ========== 交互绑定 / 启动 ==========
+
+  function bindControls() {
+    var tabs = document.querySelectorAll('.tab');
+    for (var i = 0; i < tabs.length; i++) {
+      (function (el) {
+        el.addEventListener('click', function () {
+          var view = el.getAttribute('data-view');
+          if (VIEWS.indexOf(view) < 0) return;
+          applyState(view, curDate, true);
+          syncHash(true);
+        });
+      })(tabs[i]);
+    }
+
+    document.getElementById('datePick').addEventListener('change', function (e) {
+      var v = e.target.value;
+      if (!isDateStr(v)) return;
+      curDate = v;
+      syncHash(true);
       renderChart();
     });
-  });
 
-  // 日期选择
-  document.getElementById('datePick').addEventListener('change', (e) => {
-    curDate = e.target.value;
-    renderChart();
-  });
-}
-
-function start(history) {
-  if (!history || !history.servers || Object.keys(history.servers).length === 0) {
-    document.getElementById('chart').innerHTML = '<div class="empty">暂无数据，请先运行 node app.js 采集</div>';
-    return;
+    window.addEventListener('resize', function () { if (chart) chart.resize(); });
+    window.addEventListener('hashchange', onHashChange);
   }
-  HISTORY = history;
-  const dates = allDates();
-  const dp = document.getElementById('datePick');
-  dp.min = dates[0];
-  dp.max = dates[dates.length - 1];
-  curDate = dates[dates.length - 1];
-  dp.value = curDate;
 
-  document.getElementById('updateTime').textContent = fmtTime(history.lastUpdate);
-  document.getElementById('footUpdate').textContent = '最后更新 · ' + fmtTime(history.lastUpdate);
+  function fatal(msg) {
+    fatalMsg = msg;
+    if (chart) { chart.dispose(); chart = null; }
+    var notice = document.getElementById('notice');
+    if (notice) { notice.textContent = msg; notice.hidden = false; }
+    document.getElementById('stats').innerHTML = '';
+    document.getElementById('chart').innerHTML = '<div class="empty">' + esc(msg) + '</div>';
+    document.getElementById('updateTime').textContent = '--';
+    document.getElementById('footUpdate').textContent = '--';
+  }
 
-  bindControls();
-  renderStats();
-  renderChart();
-}
+  function boot(data) {
+    if (!data || data.version !== 2) { fatal('数据格式更新中，请刷新'); return; }
+    var servers = data.servers || {};
+    SERVER_NAMES = Object.keys(servers);
+    if (!SERVER_NAMES.length) { fatal('暂无数据，请先运行 node app.js 采集'); return; }
+    HISTORY = data;
+    buildIndex();
+    if (!DATES.length) { fatal('暂无数据，请先运行 node app.js 采集'); return; }
 
-// 数据加载策略：
-// - file:// 本地直接打开（双击 index.html）→ 用 data.js 内嵌的 window.__HISTORY__
-// - http/https（Pages、NAS Web）→ fetch history.json 带时间戳防缓存，数据更及时
-// 这样 Pages 上每次都能拿到最新数据，不会被浏览器缓存的 data.js 卡住。
-if (location.protocol === 'file:' && window.__HISTORY__) {
-  start(window.__HISTORY__);
-} else {
-  fetch('history.json?t=' + Date.now())
-    .then(r => r.json())
-    .then(start)
-    .catch(() => {
-      // fetch 失败时（比如纯静态托管没 history.json），降级用 data.js
-      if (window.__HISTORY__) {
-        start(window.__HISTORY__);
-      } else {
-        document.getElementById('chart').innerHTML = '<div class="empty">数据加载失败，请先运行 node app.js</div>';
-      }
-    });
-}
+    var dp = document.getElementById('datePick');
+    dp.min = DATES[0];
+    dp.max = DATES[DATES.length - 1];
+    curDate = DATES[DATES.length - 1];
+    dp.value = curDate;
+
+    document.getElementById('serverCount').textContent = SERVER_NAMES.length + ' 区服务器 · 实时行情';
+    document.getElementById('updateTime').textContent = fmtTime(data.lastUpdate);
+    document.getElementById('footUpdate').textContent = '最后更新 · ' + fmtTime(data.lastUpdate);
+    var footRange = '数据区间 · ' + DATES[0] + ' ~ ' + DATES[DATES.length - 1] + ' · ' + DATES.length + ' 天';
+    if (isNum(Number(data.totalSamples)) && Number(data.totalSamples) > 0) {
+      footRange += ' · 共 ' + Number(data.totalSamples) + ' 条采样';
+    }
+    document.getElementById('footRange').textContent = footRange;
+
+    bindControls();
+
+    var st = parseHash();
+    applyState(st.view, st.date, false);
+    syncHash(false);
+    renderStats();
+    renderChart();
+  }
+
+  loadData().then(boot).catch(function () {
+    fatal('数据加载失败，请刷新重试');
+  });
+})();
 </script>
 </body>
 </html>
