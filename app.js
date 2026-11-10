@@ -97,9 +97,10 @@ function r6(v) { return (typeof v === 'number' && isFinite(v)) ? Math.round(v * 
 // 注意：不能用 toISOString()（它是 UTC），否则凌晨0~8点的数据会被算到前一天，
 // 导致 24号数据存进 23号文件、网页没有24号图像。
 function bjDate(d) {
-  const s = (d instanceof Date ? d : new Date(d))
-    .toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(0, 10); // sv-SE 格式 = YYYY-MM-DD HH:mm:ss
-  return s;
+  const ts = d instanceof Date ? d.getTime() : new Date(d).getTime();
+  if (!isFinite(ts)) return '';
+  // 北京时间固定 UTC+8、无夏令时；避免逐条调用 toLocaleString 在 Alpine/ICU 上极慢。
+  return new Date(ts + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 function buildHeaders(bodyObj) {

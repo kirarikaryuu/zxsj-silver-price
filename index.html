@@ -235,11 +235,120 @@
     return JSON.parse(text.slice(s, e + 1));
   }
 
+  function isLegacyHistory(data) {
+    if (!data || !data.servers) return false;
+    for (var name in data.servers) {
+      if (Object.prototype.hasOwnProperty.call(data.servers, name)) {
+        var srv = data.servers[name] || {};
+        if (Array.isArray(srv.data)) return true;
+      }
+    }
+    return false;
+  }
+
+  // v1 将每个区的全部采样直接塞进 data[]；在内存里聚合为 v2 的 daily/today，
+  // 避免旧 NAS 镜像尚未升级时整个站点因版本校验而不可用。
+  function upgradeLegacy(data) {
+    var rowsByServer = [];
+    var globalLastTs = 0;
+
+    Object.keys(data.servers || {}).forEach(function (name) {
+      var srv = data.servers[name] || {};
+      if (!Array.isArray(srv.data)) return;
+      var rows = srv.data.filter(function (s) {
+        return s && isNum(s.avg) && s.ts;
+      }).sort(function (a, b) {
+        return a.ts - b.ts;
+      });
+      if (!rows.length) return;
+      var last = rows[rows.length - 1];
+      if (last.ts > globalLastTs) globalLastTs = last.ts;
+      rowsByServer.push({ name: name, srv: srv, rows: rows, last: last });
+    });
+    if (!rowsByServer.length) return null;
+
+    var dayKey = function (ts) {
+      var d = new Date(ts);
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    };
+    var r6 = function (v) { return isNum(v) ? Math.round(v * 1e6) / 1e6 : v; };
+    var activeCutoff = globalLastTs - 7 * 24 * 60 * 60 * 1000;
+    var servers = {};
+    var datesAll = {};
+    var totalSamples = 0;
+
+    rowsByServer.forEach(function (entry) {
+      // 旧文件包含已合区服务器的历史数据，按最近采样时间排除退役区。
+      if (entry.last.ts < activeCutoff) return;
+      var dayMap = {};
+      entry.rows.forEach(function (s) {
+        var date = isDateStr(s.date) ? s.date : dayKey(s.ts);
+        var a = dayMap[date];
+        if (!a) {
+          a = dayMap[date] = {
+            n: 0,
+            sumAvg: 0,
+            o: s.avg,
+            c: s.avg,
+            h: isNum(s.high) ? s.high : s.avg,
+            l: isNum(s.low) ? s.low : s.avg
+          };
+        }
+        a.n += 1;
+        a.sumAvg += s.avg;
+        a.c = s.avg;
+        if (isNum(s.high) && s.high > a.h) a.h = s.high;
+        if (isNum(s.low) && s.low < a.l) a.l = s.low;
+      });
+
+      var days = Object.keys(dayMap).sort();
+      var daily = days.map(function (d) {
+        var a = dayMap[d];
+        return { avg: r6(a.sumAvg / a.n), o: r6(a.o), c: r6(a.c), h: r6(a.h), l: r6(a.l), n: a.n };
+      });
+      var todayDate = days[days.length - 1];
+      var todaySamples = entry.rows.filter(function (s) {
+        return (isDateStr(s.date) ? s.date : dayKey(s.ts)) === todayDate;
+      }).map(function (s) {
+        return {
+          ts: s.ts,
+          avg: r6(s.avg),
+          high: r6(s.high),
+          low: r6(s.low),
+          open: r6(s.open),
+          close: r6(s.close)
+        };
+      });
+
+      days.forEach(function (d) { datesAll[d] = true; });
+      totalSamples += entry.rows.length;
+      servers[entry.name] = {
+        serverId: entry.srv.serverId || '',
+        days: days,
+        daily: daily,
+        latest: { ts: entry.last.ts, avg: r6(entry.last.avg), date: todayDate },
+        today: { date: todayDate, samples: todaySamples }
+      };
+    });
+
+    var dates = Object.keys(datesAll).sort();
+    if (!dates.length) return null;
+    return {
+      version: 2,
+      lastUpdate: data.lastUpdate || new Date(globalLastTs).toISOString(),
+      totalSamples: totalSamples,
+      dates: dates,
+      servers: servers
+    };
+  }
+
   function loadData() {
     if (IS_FILE) {
       if (window.__HISTORY__) return Promise.resolve(window.__HISTORY__);
       return Promise.reject(new Error('data.js 未加载'));
     }
+    // 旧格式已经由 <script src="data.js"> 完整加载，避免再下载一次几十 MB 的文件。
+    if (isLegacyHistory(window.__HISTORY__)) return Promise.resolve(window.__HISTORY__);
     // http(s)：带时间戳重新拉取 data.js，避免浏览器缓存旧数据
     return fetch('data.js?t=' + Date.now(), { cache: 'no-store' })
       .then(function (r) {
@@ -770,6 +879,8 @@
   }
 
   function boot(data) {
+    var legacy = isLegacyHistory(data);
+    if (legacy) data = upgradeLegacy(data);
     if (!data || data.version !== 2) { fatal('数据格式更新中，请刷新'); return; }
     var servers = data.servers || {};
     SERVER_NAMES = Object.keys(servers);
@@ -777,6 +888,13 @@
     HISTORY = data;
     buildIndex();
     if (!DATES.length) { fatal('暂无数据，请先运行 node app.js 采集'); return; }
+    if (legacy) {
+      var notice = document.getElementById('notice');
+      if (notice) {
+        notice.textContent = '兼容模式：检测到旧版 v1 数据，已自动转换显示。请在 NAS 上重建镜像以恢复轻量 v2 数据链路。';
+        notice.hidden = false;
+      }
+    }
 
     var dp = document.getElementById('datePick');
     dp.min = DATES[0];
